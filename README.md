@@ -15,7 +15,9 @@ ATS analysis, faculty rubric scoring and reporting engine.
 * **Milestone 1** — validation, PDF/DOCX extraction, section detection, structured JSON.
 * **Milestone 2** — evidence-based findings: placeholders, section completeness, formatting
   and ATS layout risks, identity cross-check, content quality, spelling/grammar.
-* **Milestone 3** — provisional CA1 rubric scoring and ATS compatibility score (in progress).
+* **Milestone 3** — provisional CA1 rubric scoring (/30), separate ATS compatibility score
+  (/100), optional AI interface (disabled), faculty review and audit log. Weights are
+  provisional until calibrated with faculty; see [docs/SCORING.md](docs/SCORING.md).
 
 Migrated from `pps-platform/backend` (feature/ats-engine); this repository is now the
 standalone home of the scanner.
@@ -50,6 +52,14 @@ python -m pps_ats analyze "path\to\resume.pdf" --output "outputs\resume.analysis
 
 # ... with an authoritative identity manifest (CSV: file_name, student_name, student_id, email)
 python -m pps_ats analyze "path\to\resume.pdf" -o "outputs\a.json" --manifest "manifests\ca1.csv"
+
+# Milestone 3: provisional CA1 marks + ATS score (append events to a local audit log)
+python -m pps_ats score "path\to\resume.pdf" -o "outputs\resume.score.json" --audit-log "audit\ca1.jsonl"
+
+# Faculty review of a scoring JSON: override, approve, or manually grade an ungraded file
+python -m pps_ats review "outputs\resume.score.json" --reviewer F042 --reason "Objective is generic" --override content_relevance=7 --audit-log "audit\ca1.jsonl"
+python -m pps_ats review "outputs\resume.score.json" --reviewer F042 --reason "Checked" --approve
+python -m pps_ats review "outputs\scan.score.json" --reviewer F042 --reason "Scanned resume read manually" --manual content_relevance=6,structure_formatting=5,language_professional_tone=6
 
 # Folder smoke-run: one JSON per file + summary.csv (no resume text in the CSV)
 python scripts\scan_folder.py "path\to\folder" --output outputs\run1
@@ -127,10 +137,10 @@ The spelling allow-list is `src/pps_ats/resources/tech_terms.txt`
 ```
 config/default.toml        thresholds, section synonyms, non-resume phrases, placeholders
 src/pps_ats/
-  cli.py, __main__.py      CLI (scan / inspect)
+  cli.py, __main__.py      CLI (scan / inspect / analyze / score / review)
   pipeline.py              detect -> validate -> parse -> sections -> classify -> status
   config.py                settings model + TOML loading
-  schemas/                 Pydantic models (common, content, result)
+  schemas/                 Pydantic models (common, content, result, findings, scoring)
   validation/              filetype sniffing, checks, classifier, final decision
   parsers/                 pdf_parser (PyMuPDF), docx_parser (python-docx), layout, text utils
   analysis/sections.py     heading-based section segmentation (shared line->section map)
@@ -144,6 +154,7 @@ src/pps_ats/
   analysis/language.py     local spelling (pyspellchecker + allow-list), basic grammar
   analysis/orchestrator.py runs modules, isolates failures, dedupes, grading gate
   resources/tech_terms.txt spelling allow-list (technology / academic terms)
+  scoring/                 M3: deductions, engine, ats, ai (interface), review (audit)
   devtools/synthetic*.py   fictional fixture generators
 scripts/                   generate_samples.py, scan_folder.py
 tests/                     pytest suite (fixtures generated at test time)

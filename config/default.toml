@@ -359,3 +359,152 @@ max_findings = 40
 min_word_length = 3
 extra_allowed_words = []
 skip_sections = ["contact"]
+
+# =============================================================================
+# Milestone 3 — PROVISIONAL CA1 rubric scoring and ATS compatibility.
+# These weights are a starting point for faculty calibration, NOT validated marks.
+# They were not fitted to previous Excel marks (those are not treated as ground truth).
+# Change rubric_version whenever any value below changes; it is stored with every score.
+# =============================================================================
+[scoring]
+rubric_version = "CA1-provisional-1"
+rounding = 0.5                   # marks are rounded to this step
+boundary_margin = 0.25           # raw score this close to a band edge => flagged
+scale_by_confidence = true       # deduction x finding confidence
+default_group_cap = 3.0
+
+[scoring.criteria.content_relevance]
+label = "Content & Relevance"
+max_points = 10
+floor = 1
+ceiling = 9
+ceiling_note = "9-10 also requires tailoring to the role and clear goals, which deterministic checks cannot verify; an AI evaluation or faculty review can award the final mark."
+
+[scoring.criteria.structure_formatting]
+label = "Structure & Formatting"
+max_points = 10
+floor = 1
+ceiling = 10
+
+[scoring.criteria.language_professional_tone]
+label = "Language & Professional Tone"
+max_points = 10
+floor = 1
+ceiling = 10
+
+[[scoring.bands]]
+name = "excellent"
+min_score = 9
+
+[[scoring.bands]]
+name = "good"
+min_score = 6
+
+[[scoring.bands]]
+name = "needs_improvement"
+min_score = 0
+
+# Nominal deduction per finding: finding_class -> severity -> marks.
+[scoring.class_points.definite_defect]
+high = 1.5
+medium = 1.0
+low = 0.5
+info = 0.0
+
+[scoring.class_points.potential_issue]
+high = 0.75
+medium = 0.5
+low = 0.25
+info = 0.0
+
+[scoring.class_points.recommendation]
+high = 0.2
+medium = 0.15
+low = 0.1
+info = 0.0
+
+# Maximum deduction per criterion from one group (prevents one problem type dominating).
+[scoring.groups.placeholder]
+max_points = 4.0
+[scoring.groups.section_completeness]
+max_points = 5.0
+[scoring.groups.content_quality]
+max_points = 3.5
+[scoring.groups.formatting]
+max_points = 4.0
+[scoring.groups.layout]
+max_points = 2.0
+[scoring.groups.contact]
+max_points = 2.0
+[scoring.groups.spelling]
+max_points = 2.5
+[scoring.groups.grammar]
+max_points = 1.5
+[scoring.groups.style]
+max_points = 1.5
+
+# Rule-specific settings (points / group / max_count / criterion).
+[scoring.rules.SEC_REQUIRED_MISSING]
+points = 2.0
+[scoring.rules.SEC_CONTACT_MISSING]
+points = 2.0
+# SEC_EMPTY / SEC_PLACEHOLDER_ONLY use the class x severity table: the analysis marks them
+# high for required sections and medium for optional ones.
+[scoring.rules.CQ_PROJECT_NO_DESCRIPTION]
+points = 1.5
+[scoring.rules.CQ_REPEATED_LINE]
+max_count = 3
+[scoring.rules.LANG_SPELLING]
+points = 0.4
+max_count = 8
+[scoring.rules.FMT_MIXED_BODY_FONTS]
+points = 0.75
+max_count = 3                    # one inconsistency, many locations: count it a few times
+[scoring.rules.FMT_SMALL_TEXT]
+max_count = 3
+[scoring.rules.CQ_WEAK_VERB]
+group = "style"
+max_count = 5
+[scoring.rules.CQ_FILLER_PHRASE]
+group = "style"
+max_count = 5
+[scoring.rules.IDENTITY_NAME_NOT_FOUND]
+points = 0.5
+
+# A section-level finding already penalises the line-level findings it summarises.
+[scoring.supersedes]
+SEC_PLACEHOLDER_ONLY = ["PH_*"]
+SEC_EMPTY = ["PH_EMPTY_FIELD"]
+CQ_PROJECT_NO_DESCRIPTION = ["PH_EMPTY_FIELD", "CQ_PROJECT_*"]
+
+# Optional contextual evaluation. Disabled by default: no model is called and nothing
+# leaves the machine. An enabled evaluator can only nudge each criterion by max_adjustment.
+[scoring.ai]
+enabled = false
+max_adjustment = 1.0
+min_confidence = 0.7
+review_disagreement = 1.5
+redact_personal_data = true
+
+# ATS compatibility score (0-100), reported separately from CA1.
+[scoring.ats]
+base = 100
+max_per_rule = 15
+[scoring.ats.severity_points]
+high = 10
+medium = 6
+low = 3
+info = 0
+[scoring.ats.rule_points]
+SEC_CONTACT_MISSING = 20
+CONTACT_EMAIL_MISSING = 10
+CONTACT_PHONE_MISSING = 4
+SEC_REQUIRED_MISSING = 8
+SEC_EMPTY = 3
+SEC_PLACEHOLDER_ONLY = 4
+PH_GENERIC_EMAIL = 10
+PH_GENERIC_PHONE = 6
+IDENTITY_NAME_NOT_FOUND = 5
+[scoring.ats.bands]
+good = 80
+fair = 60

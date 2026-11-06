@@ -3,6 +3,8 @@
 python -m pps_ats scan FILE [--output result.json] [--no-content]
 python -m pps_ats inspect FILE            # metadata/validation/sections, no document text
 python -m pps_ats analyze FILE [--output analysis.json] [--manifest students.csv]
+python -m pps_ats score FILE [--output score.json] [--audit-log audit/ca1.jsonl]
+python -m pps_ats review score.json --reviewer F01 --reason "..." --override content_relevance=7
 """
 
 from __future__ import annotations
@@ -98,7 +100,118 @@ def _build_parser() -> argparse.ArgumentParser:
         "authoritative identity reference",
     )
     analyze.add_argument("--compact", action="store_true", help="no indentation")
+
+    score = sub.add_parser(
+        "score", help="analyse + provisional CA1 rubric marks and ATS score (no AI by default)"
+    )
+    score.add_argument("file", type=Path)
+    score.add_argument("-o", "--output", type=Path, help="scoring JSON (default: stdout)")
+    score.add_argument("--analysis-output", type=Path, help="also write the analysis JSON")
+    score.add_argument("--manifest", type=Path, help="optional identity manifest CSV")
+    score.add_argument("--audit-log", type=Path, help="append the scoring event to this JSONL")
+
+    review = sub.add_parser(
+        "review", help="faculty override / approval / manual grade of a scoring JSON"
+    )
+    review.add_argument("score_json", type=Path)
+    review.add_argument("--reviewer", required=True, help="faculty id")
+    review.add_argument("--reason", required=True, help="justification (stored in the audit)")
+    action = review.add_mutually_exclusive_group(required=True)
+    action.add_argument(
+        "--override",
+        action="append",
+        metavar="CRITERION=SCORE",
+        help="e.g. content_relevance=7 (repeatable)",
+    )
+    action.add_argument("--approve", action="store_true", help="accept the provisional marks")
+    action.add_argument(
+        "--manual", metavar="C=S,C=S,C=S", help="grade an ungraded document: all 3 criteria"
+    )
+    review.add_argument("-o", "--output", type=Path, help="updated JSON (default: in place)")
+    review.add_argument("--audit-log", type=Path, help="append review events to this JSONL")
     return parser
+
+
+def _pairs(values: list[str]) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for value in values:
+        name, sep, number = value.partition("=")
+        if not sep:
+            raise ValueError(f"expected CRITERION=SCORE, got '{value}'")
+        out[name.strip()] = float(number)
+    return out
+
+
+def _run_score(args: argparse.Namespace, settings) -> int:  # type: ignore[no-untyped-def]
+    from pps_ats.analysis.identity import load_manifest
+    from pps_ats.scoring.engine import score_file
+    from pps_ats.scoring.review import AuditLog
+
+    manifest = load_manifest(args.manifest) if args.manifest else None
+    analysis, result = score_file(args.file, settings, manifest)
+    if args.analysis_output:
+        args.analysis_output.parent.mkdir(parents=True, exist_ok=True)
+        args.analysis_output.write_text(analysis.model_dump_json(indent=2), encoding="utf-8")
+    if args.audit_log:
+        log = AuditLog(args.audit_log)
+        for entry in result.audit:
+            log.append(result, entry)
+    payload = result.model_dump_json(indent=2)
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(payload, encoding="utf-8")
+        marks = (
+            " ".join(f"{c.criterion}={c.final_score:g}" for c in result.ca1.criteria)
+            + f" total={result.ca1.total:g}/{result.ca1.max_total:g}"
+            if result.ca1
+            else "no marks"
+        )
+        ats = f"{result.ats.score:g}" if result.ats else "n/a"
+        print(
+            f"{result.file_name}: status={result.status.value} {marks} ats={ats} "
+            f"releasable={result.releasable} -> {args.output}",
+            file=sys.stderr,
+        )
+    else:
+        sys.stdout.write(payload + "\n")
+    return 0
+
+
+def _run_review(args: argparse.Namespace, settings) -> int:  # type: ignore[no-untyped-def]
+    from pps_ats.schemas.scoring import ScoringResult
+    from pps_ats.scoring import review as rv
+
+    result = ScoringResult.model_validate_json(args.score_json.read_text(encoding="utf-8"))
+    before = len(result.audit)
+    cfg = settings.scoring
+    try:
+        if args.approve:
+            result = rv.approve(result, args.reviewer, args.reason, cfg)
+        elif args.manual:
+            result = rv.manual_grade(
+                result, _pairs(args.manual.split(",")), args.reviewer, args.reason, cfg
+            )
+        else:
+            for criterion, value in _pairs(args.override).items():
+                result = rv.apply_override(
+                    result, criterion, value, args.reviewer, args.reason, cfg
+                )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if args.audit_log:
+        log = rv.AuditLog(args.audit_log)
+        for entry in result.audit[before:]:
+            log.append(result, entry)
+    target = args.output or args.score_json
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(result.model_dump_json(indent=2), encoding="utf-8")
+    total = f"{result.ca1.total:g}" if result.ca1 else "n/a"
+    print(
+        f"{result.file_name}: status={result.status.value} total={total} -> {target}",
+        file=sys.stderr,
+    )
+    return 0
 
 
 def _run_analyze(args: argparse.Namespace, settings) -> int:  # type: ignore[no-untyped-def]
@@ -150,6 +263,10 @@ def main(argv: list[str] | None = None) -> int:
         settings = load_settings(args.config)
         if args.command == "analyze":
             return _run_analyze(args, settings)
+        if args.command == "score":
+            return _run_score(args, settings)
+        if args.command == "review":
+            return _run_review(args, settings)
         result = scan_file(args.file, settings)
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)

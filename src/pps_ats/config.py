@@ -163,6 +163,66 @@ class AnalysisSettings(BaseModel):
     language: LanguageSettings = Field(default_factory=LanguageSettings)
 
 
+# --------------------------------------------------------------------------- Milestone 3
+
+
+class CriterionSettings(BaseModel):
+    label: str
+    max_points: float = 10.0
+    floor: float = 1.0  # lowest mark for a gradeable resume (rubric bands start at 1)
+    ceiling: float = 10.0  # highest mark deterministic evidence alone may award
+    ceiling_note: str = ""
+
+
+class BandSettings(BaseModel):
+    name: str  # "excellent" | "good" | "needs_improvement"
+    min_score: float
+
+
+class ScoringRuleSettings(BaseModel):
+    points: float | None = None  # nominal deduction per finding (overrides class/severity)
+    group: str | None = None  # dedupe/cap group (default: the finding category)
+    max_count: int | None = None  # occurrences counted at most
+    criterion: str | None = None  # re-route to another criterion ("none" = ignore)
+
+
+class ScoringGroupSettings(BaseModel):
+    max_points: float  # cap per criterion for this group
+
+
+class AIScoringSettings(BaseModel):
+    enabled: bool = False
+    max_adjustment: float = 1.0  # AI may move a criterion by at most this many marks
+    min_confidence: float = 0.7  # below this the AI proposal is recorded but not applied
+    review_disagreement: float = 1.5  # |proposal| >= this => manual review
+    redact_personal_data: bool = True
+
+
+class ATSScoringSettings(BaseModel):
+    base: float = 100.0
+    severity_points: dict[str, float] = Field(default_factory=dict)  # for ats_impact findings
+    rule_points: dict[str, float] = Field(default_factory=dict)
+    max_per_rule: float = 15.0
+    bands: dict[str, float] = Field(default_factory=lambda: {"good": 80.0, "fair": 60.0})
+
+
+class ScoringSettings(BaseModel):
+    rubric_version: str = "CA1-provisional-1"
+    rounding: float = 0.5
+    boundary_margin: float = 0.25
+    scale_by_confidence: bool = True
+    criteria: dict[str, CriterionSettings] = Field(default_factory=dict)
+    bands: list[BandSettings] = Field(default_factory=list)
+    class_points: dict[str, dict[str, float]] = Field(default_factory=dict)
+    groups: dict[str, ScoringGroupSettings] = Field(default_factory=dict)
+    default_group_cap: float = 3.0
+    rules: dict[str, ScoringRuleSettings] = Field(default_factory=dict)
+    # A section-level finding covers line-level findings (fnmatch patterns) in that section.
+    supersedes: dict[str, list[str]] = Field(default_factory=dict)
+    ai: AIScoringSettings = Field(default_factory=AIScoringSettings)
+    ats: ATSScoringSettings = Field(default_factory=ATSScoringSettings)
+
+
 class Settings(BaseModel):
     limits: LimitsSettings = Field(default_factory=LimitsSettings)
     text: TextSettings = Field(default_factory=TextSettings)
@@ -171,6 +231,7 @@ class Settings(BaseModel):
     classifier: ClassifierSettings = Field(default_factory=ClassifierSettings)
     sections: SectionSettings = Field(default_factory=SectionSettings)
     analysis: AnalysisSettings = Field(default_factory=AnalysisSettings)
+    scoring: ScoringSettings = Field(default_factory=ScoringSettings)
     source: str = "built-in"
 
 

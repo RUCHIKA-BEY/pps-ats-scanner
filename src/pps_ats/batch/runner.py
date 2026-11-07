@@ -24,7 +24,6 @@ import sys
 import time
 from collections import defaultdict
 from collections.abc import Callable
-from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -36,6 +35,12 @@ from pps_ats.analysis.identity import load_manifest
 from pps_ats.batch import worker
 from pps_ats.batch.discovery import Submission, discover
 from pps_ats.batch.journal import Journal, write_json_atomic
+from pps_ats.batch.supervisor import (
+    DEFAULT_TARGET,
+    Supervisor,
+    WorkerStartError,
+    resolve_target,
+)
 from pps_ats.config import Settings
 from pps_ats.reports.annotate import sha256_file
 from pps_ats.reports.excel import Entry, WorkbookWriter
@@ -69,6 +74,8 @@ class BatchOptions:
     allow_synced_output: bool = False
     report_only: bool = False  # rebuild the workbook from existing results, process nothing
     break_lock: bool = False
+    timeout_s: float | None = None  # overrides [batch] document_timeout_s
+    process_target: str = DEFAULT_TARGET  # "module:function" run for each document
 
 
 @dataclass
@@ -84,7 +91,12 @@ class BatchSummary:
     processed: int = 0
     reused: int = 0
     failed: int = 0
-    failed_kept: int = 0  # failed earlier, not retried in this run
+    failed_kept: int = 0  # failed/timed out earlier, not retried in this run
+    timed_out: int = 0  # stopped by the per-document timeout in this run
+    worker_crashes: int = 0
+    isolation: str = "inline"  # "inline" | "process"
+    document_timeout_s: float = 0.0
+    events: list[str] = field(default_factory=list)  # sleep/standby, timeouts, crashes
     not_processed: int = 0
     ignored: list[str] = field(default_factory=list)
     workbook: str | None = None
@@ -136,7 +148,7 @@ def fingerprint(settings: Settings, manifest_path: Path | None) -> str:
     """Results are reused only when this matches: engine + settings + manifest."""
     digest = hashlib.sha256()
     digest.update(f"{__version__}|{BATCH_SCHEMA_VERSION}|".encode())
-    digest.update(settings.model_dump_json(exclude={"source", "batch"}).encode())
+    digest.update(settings.model_dump_json(exclude={"source", "batch", "evaluation"}).encode())
     if manifest_path is not None:
         digest.update(sha256_file(manifest_path).encode())
     return digest.hexdigest()[:16]
@@ -206,11 +218,12 @@ def batch_flags(
 def _progress_line(done: int, total: int, counts: dict[str, int], started: float) -> str:
     elapsed = time.perf_counter() - started
     rate = counts["processed"] / elapsed if elapsed > 0 and counts["processed"] else 0.0
-    remaining = counts["queued"] - counts["processed"] - counts["failed"]
+    remaining = counts["queued"] - counts["processed"] - counts["failed"] - counts["timeout"]
     eta = f"{remaining / rate / 60:.1f} min" if rate else "-"
     return (
         f"[{done:>{len(str(total))}}/{total}] processed={counts['processed']} "
-        f"reused={counts['reused']} failed={counts['failed']} | {rate:.2f} docs/s | eta {eta}"
+        f"reused={counts['reused']} failed={counts['failed']} timeout={counts['timeout']} "
+        f"| {rate:.2f} docs/s | eta {eta}"
     )
 
 
@@ -260,8 +273,8 @@ def run_batch(
                     "reused"
                     if prev and prev.status is ProcessingStatus.DONE
                     else (
-                        "failed"
-                        if prev and prev.status is ProcessingStatus.FAILED
+                        _FAILED_STATES.get(prev.status, "not_processed")
+                        if prev
                         else "not_processed"
                     )
                 )
@@ -275,10 +288,10 @@ def run_batch(
             elif (
                 not opts.force
                 and same
-                and prev.status is ProcessingStatus.FAILED
+                and prev.status in _FAILED_STATES
                 and (not opts.retry_failed)
             ):
-                status[sub.key] = "failed"
+                status[sub.key] = _FAILED_STATES[prev.status]
                 summary.failed_kept += 1
             else:
                 queue.append(sub)
@@ -296,10 +309,21 @@ def run_batch(
         counts = {
             "processed": 0,
             "failed": 0,
+            "timeout": 0,
             "reused": summary.reused,
             "queued": len(queue),
         }
         workers = max(1, min(opts.workers or settings.batch.workers, settings.batch.max_workers))
+        if settings.scoring.ai.enabled and workers > 1:
+            progress("AI evaluation is enabled: using 1 worker (one model at a time)")
+            workers = 1
+        timeout = settings.batch.document_timeout_s if opts.timeout_s is None else opts.timeout_s
+        if timeout > 0 and settings.scoring.ai.enabled and settings.scoring.ai.provider != "none":
+            timeout += settings.scoring.ai.request_timeout_s  # allow one model call per document
+        summary.document_timeout_s = timeout
+        summary.isolation = "process" if (timeout > 0 or workers > 1) else "inline"
+        _sweep_partials(out)
+        awake = _KeepAwake(settings.batch.prevent_sleep)
         t = time.perf_counter()
         try:
             _process_queue(
@@ -316,23 +340,27 @@ def run_batch(
                 counts,
                 progress,
                 len(subs) - len(queue),
+                timeout,
+                opts.process_target,
+                summary,
             )
             summary.state = "completed"
         except KeyboardInterrupt:
             summary.state = "interrupted"
             progress("interrupted: completed documents are saved; run the same command to resume")
+        finally:
+            awake.release()
         elapsed = time.perf_counter() - t
-        summary.processed, summary.failed = (
-            counts["processed"],
-            counts["failed"] + (summary.failed_kept),
-        )
+        summary.processed, summary.timed_out = counts["processed"], counts["timeout"]
+        summary.failed = counts["failed"] + counts["timeout"] + summary.failed_kept
         summary.timing.update(
             {
                 "workers": workers,
                 "processing_s": round(elapsed, 3),
-                "documents_processed": counts["processed"] + counts["failed"],
-                "seconds_per_document": round(elapsed / (counts["processed"] + counts["failed"]), 3)
-                if counts["processed"] + counts["failed"]
+                "isolation": summary.isolation,
+                "documents_processed": _attempted(counts),
+                "seconds_per_document": round(elapsed / _attempted(counts), 3)
+                if _attempted(counts)
                 else None,
             }
         )
@@ -372,6 +400,45 @@ def run_batch(
         lock.release()
 
 
+def _attempted(counts: dict[str, int]) -> int:
+    return counts["processed"] + counts["failed"] + counts["timeout"]
+
+
+_FAILED_STATES = {ProcessingStatus.FAILED: "failed", ProcessingStatus.TIMEOUT: "timeout"}
+_PARTIAL_DIRS = (worker.RESULTS_DIR, worker.ANNOTATED_DIR, worker.REPORTS_DIR)
+
+
+def _sweep_partials(out: Path) -> None:
+    """Remove half-written files left by a stopped worker (only our own temp names)."""
+    for name in _PARTIAL_DIRS:
+        folder = out / name
+        if folder.is_dir():
+            for path in folder.iterdir():
+                if path.is_file() and path.name.endswith((".tmp", ".part")):
+                    path.unlink()
+
+
+class _KeepAwake:
+    """Windows: ask the OS not to idle-sleep while the batch runs. Closing a laptop lid
+    still suspends the PC; the timeout does not charge that time to a document."""
+
+    ES_CONTINUOUS, ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
+
+    def __init__(self, enabled: bool) -> None:
+        self.active = False
+        if enabled and sys.platform == "win32":
+            import ctypes
+
+            self.kernel = ctypes.windll.kernel32  # type: ignore[attr-defined]
+            flags = self.ES_CONTINUOUS | self.ES_SYSTEM_REQUIRED
+            self.active = bool(self.kernel.SetThreadExecutionState(flags))
+
+    def release(self) -> None:
+        if self.active:
+            self.kernel.SetThreadExecutionState(self.ES_CONTINUOUS)
+            self.active = False
+
+
 def _process_queue(
     queue: list[Submission],
     hashes: dict[str, str],
@@ -386,10 +453,13 @@ def _process_queue(
     counts: dict[str, int],
     progress: Callable[[str], None],
     already: int,
+    timeout: float,
+    target: str,
+    summary: BatchSummary,
 ) -> None:
     total = already + len(queue)
     started = time.perf_counter()
-    begun: dict[str, tuple[SubmissionRecord, float]] = {}
+    begun: dict[str, SubmissionRecord] = {}
 
     def start(sub: Submission) -> worker.Job:
         prev = journal.latest.get(sub.key)
@@ -407,69 +477,65 @@ def _process_queue(
             started_at=now_iso(),
         )
         journal.append(record)
-        begun[sub.key] = (record, time.perf_counter())
+        begun[sub.key] = record
         return worker.Job(str(sub.path), sub.rel_path, sub.key, str(out))
 
     def finish(outcome: worker.Outcome) -> None:
-        record, _ = begun.pop(outcome.key)
+        record = begun.pop(outcome.key)
+        if outcome.ok:
+            state, key = ProcessingStatus.DONE, "processed"
+        elif outcome.timed_out:
+            state, key = ProcessingStatus.TIMEOUT, "timeout"
+        else:
+            state, key = ProcessingStatus.FAILED, "failed"
         update = {
-            "status": ProcessingStatus.DONE if outcome.ok else ProcessingStatus.FAILED,
+            "status": state,
             "finished_at": now_iso(),
             "duration_ms": outcome.duration_ms,
-            "result_file": outcome.result_file,
+            "result_file": outcome.result_file if outcome.ok else None,
             "student_id": outcome.student_id,
             "student_id_source": outcome.student_id_source,
             "error_type": outcome.error_type,
             "error_message": outcome.error_message,
+            "diagnostics_file": outcome.diagnostics,
         }
         if outcome.sha256:
             update["sha256"] = outcome.sha256
         journal.append(record.model_copy(update=update))
-        key = "processed" if outcome.ok else "failed"
+        if not outcome.ok:  # a stopped worker may have left half-written outputs
+            _sweep_partials(out)
         counts[key] += 1
         status[outcome.key] = key
-        progress(
-            _progress_line(already + counts["processed"] + counts["failed"], total, counts, started)
-        )
+        progress(_progress_line(already + _attempted(counts), total, counts, started))
 
-    if workers == 1:
+    if timeout <= 0 and workers == 1:  # no isolation: documents run in this process
+        process = worker.process if target == DEFAULT_TARGET else resolve_target(target)
         for sub in queue:
             job = start(sub)
-            finish(worker.process(job, settings, manifest))
+            finish(process(job, settings, manifest))
         return
 
-    pool = ProcessPoolExecutor(
-        max_workers=workers,
-        initializer=worker.init_worker,
-        initargs=(settings.model_dump_json(), manifest),
-        max_tasks_per_child=settings.batch.max_tasks_per_child,
+    supervisor = Supervisor(
+        workers,
+        settings,
+        manifest,
+        timeout,
+        out,
+        target=target,
+        suspend_gap_s=settings.batch.suspend_gap_s,
     )
-    pending: dict[Future, str] = {}
-    items = iter(queue)
     try:
-        while True:
-            while len(pending) < workers * 2:  # bounded in-flight window
-                sub = next(items, None)
-                if sub is None:
-                    break
-                pending[pool.submit(worker.process_in_worker, start(sub))] = sub.key
-            if not pending:
-                break
-            done, _ = wait(pending, return_when=FIRST_COMPLETED)
-            for future in done:
-                key = pending.pop(future)
-                try:
-                    outcome = future.result()
-                except Exception as exc:  # worker process died (e.g. out of memory)
-                    outcome = worker.Outcome(
-                        key=key,
-                        ok=False,
-                        error_type=type(exc).__name__,
-                        error_message=str(exc)[:300],
-                    )
-                finish(outcome)
+        supervisor.run(iter(queue), start, finish)
+    except WorkerStartError as exc:
+        raise BatchError(str(exc)) from exc
     finally:
-        pool.shutdown(wait=True, cancel_futures=True)
+        st = supervisor.stats
+        summary.worker_crashes += st.crashes
+        summary.events += st.events
+        if st.suspended_s:
+            summary.timing["suspended_s"] = round(st.suspended_s, 1)
+        for event in st.events:
+            progress(event)
 
 
 def load_summary(output_dir: Path) -> dict[str, Any]:

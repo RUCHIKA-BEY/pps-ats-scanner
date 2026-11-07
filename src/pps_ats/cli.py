@@ -6,7 +6,11 @@ python -m pps_ats analyze FILE [--output analysis.json] [--manifest students.csv
 python -m pps_ats score FILE [--output score.json] [--audit-log audit/ca1.jsonl]
 python -m pps_ats review score.json --reviewer F01 --reason "..." --override content_relevance=7
 python -m pps_ats annotate FILE --output annotated.pdf
-python -m pps_ats batch INPUT_DIR --output PRIVATE_OUTPUT_DIR [--manifest m.csv] [--workers 2]
+python -m pps_ats batch INPUT_DIR --output PRIVATE_OUTPUT_DIR [--manifest m.csv] [--timeout 120]
+python -m pps_ats eval-split DATASET
+python -m pps_ats evaluate DATASET --output PRIVATE_REPORT_DIR [--variant A|B]
+python -m pps_ats benchmark-ai DATASET --output PRIVATE_REPORT_DIR
+python -m pps_ats ai-check
 """
 
 from __future__ import annotations
@@ -160,6 +164,35 @@ def _build_parser() -> argparse.ArgumentParser:
     batch.add_argument(
         "--break-lock", action="store_true", help="remove a stale lock left by a killed run"
     )
+    batch.add_argument(
+        "--timeout",
+        type=float,
+        help="active seconds per document before its worker is stopped (0 = off)",
+    )
+
+    ev = sub.add_parser("evaluate", help="compare scanner output with faculty references")
+    ev.add_argument("dataset", type=Path, help="folder with documents.csv [+ annotations.csv]")
+    ev.add_argument("-o", "--output", type=Path, required=True, help="private report folder")
+    ev.add_argument("--split", default="evaluation", choices=["evaluation", "calibration"])
+    ev.add_argument("--variant", default="A", choices=["A", "B"], help="B = with AI")
+    ev.add_argument("--documents", type=Path, help="root for document paths (default: dataset)")
+    ev.add_argument("--allow-synced-output", action="store_true")
+
+    bench = sub.add_parser("benchmark-ai", help="A (scanner) vs B (scanner + AI) on references")
+    bench.add_argument("dataset", type=Path)
+    bench.add_argument("-o", "--output", type=Path, required=True)
+    bench.add_argument("--split", default="evaluation", choices=["evaluation", "calibration"])
+    bench.add_argument("--documents", type=Path)
+    bench.add_argument("--allow-synced-output", action="store_true")
+
+    split = sub.add_parser("eval-split", help="assign and freeze calibration/evaluation splits")
+    split.add_argument("dataset", type=Path)
+    split.add_argument("--eval-fraction", type=float, default=0.3)
+    split.add_argument("--seed", type=int, default=13)
+
+    sub.add_parser(
+        "ai-check", help="check the AI provider policy and test it on a FICTIONAL resume"
+    )
     return parser
 
 
@@ -284,6 +317,7 @@ def _run_batch(args: argparse.Namespace, settings) -> int:  # type: ignore[no-un
         allow_synced_output=args.allow_synced_output,
         report_only=args.report_only,
         break_lock=args.break_lock,
+        timeout_s=args.timeout,
     )
     try:
         summary = run_batch(opts, settings)
@@ -297,6 +331,104 @@ def _run_batch(args: argparse.Namespace, settings) -> int:  # type: ignore[no-un
         file=sys.stderr,
     )
     return 130 if summary.state == "interrupted" else 0
+
+
+def _private_output(path: Path, allow: bool, settings) -> str | None:  # type: ignore[no-untyped-def]
+    from pps_ats.batch.runner import synced_location
+
+    synced = synced_location(path, settings.batch.synced_markers)
+    if synced and not allow:
+        return (
+            f"output folder is inside a cloud-synced location ({synced}); evaluation reports "
+            "contain student text. Use a local folder or --allow-synced-output."
+        )
+    return None
+
+
+def _run_evaluate(args: argparse.Namespace, settings) -> int:  # type: ignore[no-untyped-def]
+    from pps_ats.evaluation.dataset import DatasetError, load_dataset
+    from pps_ats.evaluation.runner import run_benchmark, run_evaluation
+    from pps_ats.scoring.llm import AIConfigError
+
+    problem = _private_output(args.output, args.allow_synced_output, settings)
+    if problem:
+        print(f"error: {problem}", file=sys.stderr)
+        return 2
+    try:
+        dataset = load_dataset(args.dataset, args.documents, set(settings.evaluation.labels))
+        if args.command == "benchmark-ai":
+            decision = run_benchmark(dataset, settings, args.output, args.split)
+            print(
+                f"benchmark: {decision['decision']} ({'; '.join(decision['reasons'])}) "
+                f"-> {args.output / 'benchmark.md'}",
+                file=sys.stderr,
+            )
+            return 0
+        report = run_evaluation(dataset, settings, args.output, args.split, args.variant)
+    except (DatasetError, AIConfigError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(
+        f"evaluation {report.variant} on {report.split}: {report.documents} documents, "
+        f"total MAE={report.total_error.mae} (n={report.total_error.n}), "
+        f"issue recall={report.issue_overall.recall}, validation errors="
+        f"{len(report.validation_errors)} -> {args.output / 'evaluation.md'}",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def _run_eval_split(args: argparse.Namespace) -> int:
+    from pps_ats.evaluation.dataset import DatasetError, freeze_split
+
+    try:
+        counts = freeze_split(args.dataset, args.eval_fraction, args.seed)
+    except (DatasetError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(f"split frozen: {counts} -> {args.dataset / 'split_lock.json'}", file=sys.stderr)
+    return 0
+
+
+def _run_ai_check(settings) -> int:  # type: ignore[no-untyped-def]
+    """Policy check + one request with a fictional resume (never student data)."""
+    from pps_ats.scoring.ai import AIEvaluationRequest, verify_response
+    from pps_ats.scoring.llm import AIConfigError, OpenAICompatibleEvaluator
+
+    cfg = settings.scoring.ai
+    print(f"enabled={cfg.enabled} provider={cfg.provider} model={cfg.model!r}", file=sys.stderr)
+    try:
+        evaluator = OpenAICompatibleEvaluator(cfg)
+    except AIConfigError as exc:
+        print(f"policy: REFUSED - {exc}", file=sys.stderr)
+        return 2
+    print(f"policy: OK ({evaluator.endpoint})", file=sys.stderr)
+    request = AIEvaluationRequest(
+        rubric_version=settings.scoring.rubric_version,
+        sections={
+            "summary": "Seeking a job in a good company where I can grow my skills.",
+            "projects": "Library App - made an app for library. Used Java.",
+        },
+        deterministic_scores={c: 8.0 for c in settings.scoring.criteria},
+        finding_rules=["CQ_PROJECT_VAGUE"],
+    )
+    try:
+        response = evaluator.evaluate(request)
+    except RuntimeError as exc:
+        print(f"request: FAILED - {exc}", file=sys.stderr)
+        return 1
+    kept, observations, rejected = verify_response(
+        response, request, set(settings.scoring.criteria), cfg.min_evidence_chars
+    )
+    print(
+        f"request: OK model={response.model_id} proposals={len(response.proposals)} "
+        f"(evidence-backed {len(kept)}) observations={len(response.observations)} "
+        f"(evidence-backed {len(observations)}) rejected={len(rejected)}",
+        file=sys.stderr,
+    )
+    for reason in rejected:
+        print(f"  rejected: {reason}", file=sys.stderr)
+    return 0
 
 
 def _run_analyze(args: argparse.Namespace, settings) -> int:  # type: ignore[no-untyped-def]
@@ -356,6 +488,12 @@ def main(argv: list[str] | None = None) -> int:
             return _run_annotate(args, settings)
         if args.command == "batch":
             return _run_batch(args, settings)
+        if args.command in ("evaluate", "benchmark-ai"):
+            return _run_evaluate(args, settings)
+        if args.command == "eval-split":
+            return _run_eval_split(args)
+        if args.command == "ai-check":
+            return _run_ai_check(settings)
         result = scan_file(args.file, settings)
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)

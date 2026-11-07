@@ -48,6 +48,8 @@ class Outcome:
     error_type: str | None = None
     error_message: str | None = None
     duration_ms: int = 0
+    timed_out: bool = False
+    diagnostics: str | None = None  # stall traceback (code locations only)
 
 
 def manifest_record(
@@ -103,7 +105,7 @@ def process(job: Job, settings: Settings, manifest: dict[str, ManifestRecord] | 
         record = manifest_record(manifest, job.rel_path, Path(job.path).name)
         t = time.perf_counter()
         analysis = analyze_scan(scan, settings, record)
-        scoring = score_analysis(analysis, settings, scan=scan)
+        scoring = score_analysis(analysis, settings, scan=scan, evaluator=_evaluator(settings))
         timings["analyse_score"] = int((time.perf_counter() - t) * 1000)
         t = time.perf_counter()
         annotation = _annotate(job, analysis, scoring, settings, out)
@@ -145,6 +147,22 @@ def process(job: Job, settings: Settings, manifest: dict[str, ManifestRecord] | 
             error_message=str(exc)[:300],
             duration_ms=int((time.perf_counter() - started) * 1000),
         )
+
+
+_EVALUATORS: dict[str, object] = {}
+
+
+def _evaluator(settings: Settings):  # type: ignore[no-untyped-def]
+    """The optional AI evaluator (``None`` unless [scoring.ai] enables one), built once."""
+    cfg = settings.scoring.ai
+    if not cfg.enabled or cfg.provider == "none":
+        return None
+    key = cfg.model_dump_json()
+    if key not in _EVALUATORS:
+        from pps_ats.scoring.llm import build_evaluator
+
+        _EVALUATORS[key] = build_evaluator(cfg)
+    return _EVALUATORS[key]
 
 
 # ---------------------------------------------------------------- worker-process plumbing

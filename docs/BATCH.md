@@ -76,6 +76,28 @@ Markup by class: definite defect = red highlight, potential issue = orange squig
 recommendation = blue underline. Each comment has the explanation, suggestion and CA1
 effect. The original's SHA-256 is re-checked after annotating.
 
+## Timeouts, crashes and sleep (Milestone 5)
+
+* Each document runs in a supervised worker process. If it has not finished after
+  `[batch] document_timeout_s` (default 120 s, `--timeout` overrides) of *active* time,
+  the worker is stopped, the document is recorded as `timeout` (grading status
+  `processing_timeout`, Manual Review category `processing_timeout`) and the batch
+  continues with a fresh worker.
+* Just before stopping it, the stuck stack is written to `diagnostics/stall_<id>.txt`
+  (code locations only, no document text).
+* A worker that dies (native crash, out of memory) gives `WorkerCrashed` for that
+  document only.
+* Timed-out and failed documents are kept on the next run and re-processed with
+  `--retry-failed`. Only the main process writes the journal, so stopping a worker cannot
+  corrupt it; half-written outputs (`*.tmp`, `*.part`) are removed.
+* Sleep/standby: the Milestone 4 stalls were Windows Modern Standby (system event log:
+  standby entered 01:16:24 UTC, exited 01:31:42; the 10-minute document ran
+  01:21:35–01:31:43). The supervisor does not charge gaps longer than `suspend_gap_s`
+  (15 s) to the document, records them in the summary, and asks Windows not to idle-sleep
+  during a batch (`prevent_sleep`). Closing the lid still suspends the PC.
+* `document_timeout_s = 0` runs documents inside the main process (no isolation, no
+  timeout).
+
 ## Workers
 
 `--workers N` (bounded by `[batch] max_workers`) runs documents in separate processes; the

@@ -37,6 +37,7 @@ from pps_ats.scoring.ai import (
     AIEvaluationRequest,
     ContextualEvaluator,
     redact,
+    verify_response,
 )
 from pps_ats.scoring.ats import compute_ats
 from pps_ats.scoring.deductions import compute_deductions
@@ -85,6 +86,7 @@ def _ai_request(
     for section in scan.sections:
         if section.content_text:
             text = section.content_text
+            text = text[: cfg.ai.max_section_chars]
             sections[section.name] = (
                 redact(text, names, ids) if cfg.ai.redact_personal_data else text
             )
@@ -197,7 +199,12 @@ def score_analysis(
         )
     ]
 
-    # Optional contextual evaluation: bounded, confidence-gated, fully recorded.
+    # Optional contextual evaluation: evidence-checked, bounded, confidence-gated, recorded.
+    # The model never sees invalid/ungraded documents (returned above) and cannot change
+    # validity, findings or the final (faculty) marks.
+    ai_model: str | None = None
+    ai_observations = []
+    ai_rejected: list[str] = []
     if cfg.ai.enabled and evaluator is not None:
         if scan is None:
             review_reasons.append("AI_SKIPPED: no extracted sections supplied to the evaluator")
@@ -222,8 +229,16 @@ def score_analysis(
                     )
                 )
             else:
+                ai_model = response.model_id
+                proposals, ai_observations, ai_rejected = verify_response(
+                    response,
+                    request,
+                    set(cfg.criteria),
+                    cfg.ai.min_evidence_chars,
+                    cfg.ai.require_evidence,
+                )
                 by_name = {c.criterion: c for c in criteria}
-                for proposal in response.proposals:
+                for proposal in proposals:
                     crit_score = by_name.get(proposal.criterion)
                     if crit_score is None:
                         continue
@@ -250,6 +265,7 @@ def score_analysis(
                         accepted=accepted,
                         rationale=proposal.rationale[:500],
                         reason=reason,
+                        evidence=[q[:300] for q in proposal.evidence[:5]],
                     )
                     crit_score.provisional_score = crit_score.final_score = provisional
                     crit_score.band = band_for(provisional, cfg)
@@ -268,6 +284,8 @@ def score_analysis(
                         details={
                             "proposals": len(response.proposals),
                             "accepted": sum(1 for c in criteria if c.ai and c.ai.accepted),
+                            "observations": len(ai_observations),
+                            "rejected_claims": len(ai_rejected),
                         },
                     )
                 )
@@ -291,6 +309,9 @@ def score_analysis(
         ),
         ats=compute_ats(analysis.findings, cfg.ats),
         contributions=contributions,
+        ai_model=ai_model,
+        ai_observations=ai_observations,
+        ai_rejected=ai_rejected,
         audit=audit,
     )
     log.info(
@@ -310,6 +331,10 @@ def score_file(
     evaluator: ContextualEvaluator | None = None,
 ) -> tuple[AnalysisResult, ScoringResult]:
     settings = settings or default_settings()
+    if evaluator is None and settings.scoring.ai.enabled:
+        from pps_ats.scoring.llm import build_evaluator  # None unless a provider is set
+
+        evaluator = build_evaluator(settings.scoring.ai)
     path = Path(path)
     scan = scan_file(path, settings)
     record = manifest.get(path.name.lower()) if manifest else None

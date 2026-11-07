@@ -95,6 +95,8 @@ REVIEW = [
 ]
 ACTIONS = {
     "processing_failed": "Open the file manually; re-run with --retry-failed after fixing.",
+    "processing_timeout": "Check the file (very large or malformed?); --retry-failed, "
+    "or grade manually.",
     "invalid": "Ask for a valid PDF/DOCX resubmission or grade manually.",
     "unreadable": "Scanned/image-only: read manually and use `review --manual`.",
     "not_a_resume": "Check that the correct document was submitted.",
@@ -119,7 +121,7 @@ class Entry:
     rel_path: str
     file_name: str
     key: str
-    processing_status: str  # "processed" | "reused" | "failed" | "not_processed"
+    processing_status: str  # "processed" | "reused" | "failed" | "timeout" | "not_processed"
     record: SubmissionRecord | None = None
     result: DocumentResult | None = None
     batch_flags: list[tuple[str, str]] = field(default_factory=list)  # (category, reason)
@@ -145,7 +147,9 @@ class Entry:
 
 def grading_status(entry: Entry) -> str:
     if entry.result is None:
-        return "processing_failed" if entry.processing_status == "failed" else "not_processed"
+        return {"failed": "processing_failed", "timeout": "processing_timeout"}.get(
+            entry.processing_status, "not_processed"
+        )
     status = entry.result.scoring.status
     if entry.batch_flags and status is ScoreStatus.PROVISIONAL:
         return ScoreStatus.NEEDS_REVIEW.value
@@ -156,13 +160,11 @@ def review_items(entry: Entry) -> list[tuple[str, str]]:
     """(category, specific reason) pairs; empty when no manual review is needed."""
     items: list[tuple[str, str]] = []
     if entry.result is None:
-        if entry.processing_status == "failed" and entry.record is not None:
-            items.append(
-                (
-                    "processing_failed",
-                    f"{entry.record.error_type}: {entry.record.error_message}",
-                )
-            )
+        if entry.processing_status in ("failed", "timeout") and entry.record is not None:
+            reason = f"{entry.record.error_type}: {entry.record.error_message}"
+            if entry.record.diagnostics_file:
+                reason += f" (stack trace: {entry.record.diagnostics_file})"
+            items.append((f"processing_{entry.processing_status}", reason))
         else:
             items.append(("not_processed", "not processed yet (interrupted or --limit)"))
         return items + entry.batch_flags
@@ -426,6 +428,9 @@ class WorkbookWriter:
             ("  processed in this run", st.by_processing.get("processed", 0)),
             ("  reused from an earlier run (unchanged)", st.by_processing.get("reused", 0)),
             ("Failed (processing error)", st.by_processing.get("failed", 0)),
+            ("Timed out (worker stopped)", st.by_processing.get("timeout", 0)),
+            ("Per-document timeout (s, 0 = none)", run.get("document_timeout_s")),
+            ("Worker crashes", run.get("worker_crashes", 0)),
             ("Not processed yet", st.by_processing.get("not_processed", 0)),
             ("Provisionally graded (releasable)", g.get("provisional", 0)),
             ("Graded, requiring review", g.get("needs_review", 0)),

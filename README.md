@@ -20,6 +20,9 @@ ATS analysis, faculty rubric scoring and reporting engine.
   provisional until calibrated with faculty; see [docs/SCORING.md](docs/SCORING.md).
 * **Milestone 4** — annotated PDF copies, DOCX findings reports, consolidated Excel
   workbook and a resumable batch processor; see [docs/BATCH.md](docs/BATCH.md).
+* **Milestone 5** — per-document timeout with supervised workers, evaluation against
+  faculty-corrected references ([docs/EVALUATION.md](docs/EVALUATION.md)), optional
+  evidence-checked AI assistance, disabled by default ([docs/AI.md](docs/AI.md)).
 
 Migrated from `pps-platform/backend` (feature/ats-engine); this repository is now the
 standalone home of the scanner.
@@ -71,6 +74,12 @@ python -m pps_ats annotate "path\to\resume.pdf" -o "D:\pps_private\resume.annota
 python -m pps_ats batch "D:\pps_private\submissions" -o "D:\pps_private\ca1_run" --manifest "D:\pps_private\students.csv"
 python -m pps_ats batch ... --retry-failed      # re-run files that failed earlier
 python -m pps_ats batch ... --report-only       # rebuild the workbook only
+
+# Milestone 5: accuracy against faculty-corrected references (private local folders)
+python -m pps_ats eval-split "D:\pps_private\reference"
+python -m pps_ats evaluate "D:\pps_private\reference" -o "D:\pps_private\eval_A"
+python -m pps_ats benchmark-ai "D:\pps_private\reference" -o "D:\pps_private\bench"
+python -m pps_ats ai-check                       # AI provider policy + fictional test request
 
 # Folder smoke-run: one JSON per file + summary.csv (no resume text in the CSV)
 python scripts\scan_folder.py "path\to\folder" --output outputs\run1
@@ -168,6 +177,9 @@ src/pps_ats/
   scoring/                 M3: deductions, engine, ats, ai (interface), review (audit)
   reports/                 M4: annotate (PDF copies), findings_report (DOCX), excel
   batch/                   M4: discovery, journal (resume), worker, runner
+  batch/supervisor.py      M5: worker processes, per-document timeout, crash recovery
+  scoring/llm.py           M5: optional local/authorised AI provider (OpenAI-compatible)
+  evaluation/              M5: reference dataset, comparison, reports, A/B benchmark
   devtools/synthetic*.py   fictional fixture generators
 scripts/                   generate_samples.py, scan_folder.py
 tests/                     pytest suite (fixtures generated at test time)

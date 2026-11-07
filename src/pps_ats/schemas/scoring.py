@@ -10,7 +10,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
-SCORING_SCHEMA_VERSION = "1.0.0"
+SCORING_SCHEMA_VERSION = "1.1.0"  # 1.1: AI evidence, observations, rejections
 
 
 class ScoreStatus(StrEnum):
@@ -62,6 +62,21 @@ class AIAdjustment(BaseModel):
     accepted: bool
     rationale: str = ""
     reason: str | None = None  # why it was clipped / rejected
+    evidence: list[str] = Field(default_factory=list)  # verbatim quotes, verified in the text
+
+
+class AIObservation(BaseModel):
+    """A contextual observation from the optional AI. Advisory only: it never changes the
+    deterministic findings, validity or marks. ``evidence`` is a verbatim quote that was
+    verified to occur in the (redacted) document text."""
+
+    aspect: str  # career_objective | project_description | professional_tone | contextual_grammar
+    section: str | None = None
+    evidence: str
+    issue: str
+    suggestion: str | None = None
+    severity: str = "low"  # low | medium | high
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
 class FacultyOverride(BaseModel):
@@ -130,6 +145,9 @@ class ScoringResult(BaseModel):
     ats: ATSScore | None = None
     contributions: list[FindingContribution] = Field(default_factory=list)
     ai_enabled: bool = False
+    ai_model: str | None = None
+    ai_observations: list[AIObservation] = Field(default_factory=list)
+    ai_rejected: list[str] = Field(default_factory=list)  # unsupported claims, with reasons
     audit: list[AuditEntry] = Field(default_factory=list)
     note: str = (
         "Provisional marks from deterministic evidence. Faculty review is the final authority."

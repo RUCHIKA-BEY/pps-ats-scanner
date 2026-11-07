@@ -485,6 +485,21 @@ max_adjustment = 1.0
 min_confidence = 0.7
 review_disagreement = 1.5
 redact_personal_data = true
+require_evidence = true          # every AI claim must quote the document verbatim
+min_evidence_chars = 8
+# Provider (Milestone 5). Disabled unless enabled = true AND provider is set.
+#   "local"    OpenAI-compatible server on this computer only (Ollama, llama.cpp, LM Studio)
+#   "external" remote API: also needs allow_external = true and external_authorised_by
+provider = "none"
+base_url = "http://127.0.0.1:11434/v1"
+model = ""                       # e.g. "qwen2.5:7b-instruct" (pulled into the local server)
+request_timeout_s = 120
+temperature = 0.0
+seed = 7
+max_section_chars = 3000
+allow_external = false
+external_authorised_by = ""      # name/role and date of the approval for external use
+api_key_env = "PPS_ATS_AI_API_KEY"
 
 # ATS compatibility score (0-100), reported separately from CA1.
 [scoring.ats]
@@ -521,7 +536,52 @@ excel_text_limit = 500
 [batch]
 workers = 1                  # parallel worker processes (each opens one document at a time)
 max_workers = 4              # upper bound for --workers
-max_tasks_per_child = 50     # recycle worker processes to bound memory
+document_timeout_s = 120     # active seconds per document before its worker is stopped;
+                             # 0 = no limit and run documents in the main process
+suspend_gap_s = 15           # pauses longer than this = PC asleep; not charged to a document
+prevent_sleep = true         # Windows: request the PC stays awake during a batch
 ignore_names = ["desktop.ini", "thumbs.db", ".ds_store"]   # OS files, listed in the summary
 ignore_prefixes = ["~$", "._"]                               # Office lock / macOS resource files
 synced_markers = ["onedrive", "dropbox", "google drive", "icloud"]
+
+# ---------------------------------------------------------------- Milestone 5: evaluation
+# Compares scanner output with faculty-corrected references (see docs/EVALUATION.md).
+[evaluation]
+text_match_threshold = 0.5        # faculty quote vs scanner text similarity to count a match
+high_severity_levels = ["high"]   # scanner severities treated as high
+high_severity_classes = ["definite_defect"]  # ... and these finding classes
+bootstrap_samples = 2000          # paired bootstrap for the A-vs-B comparison
+seed = 13
+
+# Canonical faculty issue labels -> scanner rules (fnmatch) and AI aspects ("AI:<aspect>").
+[evaluation.labels]
+placeholder = ["PH_*", "SEC_PLACEHOLDER_ONLY"]
+missing_section = ["SEC_REQUIRED_MISSING", "SEC_RECOMMENDED_MISSING"]
+empty_section = ["SEC_EMPTY"]
+contact = ["SEC_CONTACT_MISSING", "CONTACT_*"]
+spelling = ["LANG_SPELLING"]
+grammar = ["LANG_LOWERCASE_I", "LANG_NO_SPACE_AFTER_PUNCT", "LANG_REPEATED_WORD",
+           "LANG_SPACE_BEFORE_PUNCT", "AI:contextual_grammar"]
+formatting = ["FMT_*"]
+layout = ["LAYOUT_*"]
+career_objective = ["CQ_OBJECTIVE_*", "AI:career_objective"]
+project_description = ["CQ_PROJECT_*", "AI:project_description"]
+weak_language = ["CQ_WEAK_VERB", "CQ_FILLER_PHRASE", "AI:professional_tone"]
+education_details = ["CQ_EDUCATION_INCOMPLETE"]
+certification_details = ["CQ_CERTIFICATION_DETAILS"]
+duplicate_content = ["CQ_REPEATED_LINE", "CQ_NEAR_DUPLICATE_LINE"]
+identity = ["IDENTITY_*"]
+uncertain_structure = ["SEC_UNCERTAIN", "FMT_GARBLED_TEXT"]
+
+# AI assistance is recommended for a pilot only if ALL of these hold on the held-out split.
+[evaluation.ai_adoption]
+min_documents = 30                 # faculty-marked evaluation documents
+min_total_mae_improvement = 0.25   # marks /30
+max_criterion_mae_increase = 0.0   # no criterion may get worse
+max_high_severity_fn_increase = 0
+max_high_severity_fp_increase = 0
+require_ci_excludes_zero = true    # 95% paired-bootstrap CI of the total-MAE change < 0
+
+[evaluation.fine_tuning]
+min_paired_documents = 500         # faculty-marked + fully annotated, calibration split
+min_evaluation_documents = 100     # held-out, never used for tuning

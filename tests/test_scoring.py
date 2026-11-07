@@ -226,10 +226,17 @@ def test_ai_adjustment_is_bounded_and_confidence_gated(docs):
     evaluator = FakeEvaluator(
         [
             CriterionProposal(
-                criterion="content_relevance", adjustment=3.0, confidence=0.9, rationale="tailored"
+                criterion="content_relevance",
+                adjustment=3.0,
+                confidence=0.9,
+                rationale="tailored",
+                evidence=["focused on backend development"],
             ),
             CriterionProposal(
-                criterion="language_professional_tone", adjustment=-1.0, confidence=0.4
+                criterion="language_professional_tone",
+                adjustment=-1.0,
+                confidence=0.4,
+                evidence=["seeking a software engineering internship"],
             ),
         ]
     )

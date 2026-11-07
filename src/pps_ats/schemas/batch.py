@@ -53,6 +53,7 @@ class ProcessingStatus(StrEnum):
     PROCESSING = "processing"  # started; a crash leaves this and the file is re-run
     DONE = "done"
     FAILED = "failed"
+    TIMEOUT = "timeout"  # stopped after [batch] document_timeout_s of active processing
 
 
 class SubmissionRecord(BaseModel):
@@ -73,6 +74,7 @@ class SubmissionRecord(BaseModel):
     student_id_source: str = "none"
     error_type: str | None = None
     error_message: str | None = None
+    diagnostics_file: str | None = None
     started_at: str | None = None
     finished_at: str | None = None
     duration_ms: int | None = None

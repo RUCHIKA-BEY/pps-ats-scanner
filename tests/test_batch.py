@@ -203,7 +203,7 @@ def test_interruption_and_restart(batch_inputs, tmp_path, settings, monkeypatch)
         return real(job, *args)
 
     monkeypatch.setattr(worker, "process", flaky)
-    first = run_batch(opts(src, out, manifest), settings, quiet)
+    first = run_batch(opts(src, out, manifest, timeout_s=0), settings, quiet)
     assert first.state == "interrupted" and first.processed == 3
     grades = sheet(out / WORKBOOK, "CA1 Grades")
     assert len(grades) == first.total  # unprocessed files still have a row
@@ -215,7 +215,7 @@ def test_interruption_and_restart(batch_inputs, tmp_path, settings, monkeypatch)
     assert not (out / ".batch.lock").exists()
 
     monkeypatch.setattr(worker, "process", real)
-    second = run_batch(opts(src, out, manifest), settings, quiet)
+    second = run_batch(opts(src, out, manifest, timeout_s=0), settings, quiet)
     assert second.state == "completed"
     assert second.reused == 3 and second.processed == first.total - 3
     grades = sheet(out / WORKBOOK, "CA1 Grades")
@@ -247,7 +247,7 @@ def test_failures_do_not_stop_the_batch_and_can_be_retried(
         return real_scan(path, *args)
 
     monkeypatch.setattr(worker, "scan_file", broken)
-    first = run_batch(opts(src, out, manifest), settings, quiet)
+    first = run_batch(opts(src, out, manifest, timeout_s=0), settings, quiet)
     assert first.state == "completed" and first.failed == 1
     assert first.processed == first.total - 1
     row = next(
@@ -263,9 +263,9 @@ def test_failures_do_not_stop_the_batch_and_can_be_retried(
     )
 
     monkeypatch.setattr(worker, "scan_file", real_scan)
-    kept = run_batch(opts(src, out, manifest), settings, quiet)
+    kept = run_batch(opts(src, out, manifest, timeout_s=0), settings, quiet)
     assert kept.failed == 1 and kept.failed_kept == 1 and kept.processed == 0
-    retried = run_batch(opts(src, out, manifest, retry_failed=True), settings, quiet)
+    retried = run_batch(opts(src, out, manifest, retry_failed=True, timeout_s=0), settings, quiet)
     assert retried.failed == 0 and retried.processed == 1
     assert Journal(out / JOURNAL).latest[make_key("div_B/Kiran_Demo_Resume.docx")].attempts == 2
 

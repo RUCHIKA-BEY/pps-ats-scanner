@@ -5,6 +5,12 @@ python -m pps_ats inspect FILE            # metadata/validation/sections, no doc
 python -m pps_ats analyze FILE [--output analysis.json] [--manifest students.csv]
 python -m pps_ats score FILE [--output score.json] [--audit-log audit/ca1.jsonl]
 python -m pps_ats review score.json --reviewer F01 --reason "..." --override content_relevance=7
+python -m pps_ats annotate FILE --output annotated.pdf
+python -m pps_ats batch INPUT_DIR --output PRIVATE_OUTPUT_DIR [--manifest m.csv] [--timeout 120]
+python -m pps_ats eval-split DATASET
+python -m pps_ats evaluate DATASET --output PRIVATE_REPORT_DIR [--variant A|B]
+python -m pps_ats benchmark-ai DATASET --output PRIVATE_REPORT_DIR
+python -m pps_ats ai-check
 """
 
 from __future__ import annotations
@@ -129,6 +135,64 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     review.add_argument("-o", "--output", type=Path, help="updated JSON (default: in place)")
     review.add_argument("--audit-log", type=Path, help="append review events to this JSONL")
+
+    annotate = sub.add_parser(
+        "annotate", help="annotated PDF copy (PDF) or findings report (DOCX) for one file"
+    )
+    annotate.add_argument("file", type=Path)
+    annotate.add_argument("-o", "--output", type=Path, required=True, help="output PDF path")
+    annotate.add_argument("--manifest", type=Path, help="optional identity manifest CSV")
+
+    batch = sub.add_parser(
+        "batch", help="resumable batch: results JSON, annotated PDFs, Excel workbook"
+    )
+    batch.add_argument("input_dir", type=Path)
+    batch.add_argument("-o", "--output", type=Path, required=True, help="private output folder")
+    batch.add_argument("--manifest", type=Path, help="identity manifest CSV (student IDs)")
+    batch.add_argument("--workers", type=int, help="parallel processes (bounded by config)")
+    batch.add_argument("--retry-failed", action="store_true", help="re-run failed files")
+    batch.add_argument("--force", action="store_true", help="re-process unchanged files too")
+    batch.add_argument("--limit", type=int, help="process at most N files in this run")
+    batch.add_argument(
+        "--report-only", action="store_true", help="rebuild the workbook; process nothing"
+    )
+    batch.add_argument(
+        "--allow-synced-output",
+        action="store_true",
+        help="allow an output folder inside OneDrive/Dropbox/... (not recommended)",
+    )
+    batch.add_argument(
+        "--break-lock", action="store_true", help="remove a stale lock left by a killed run"
+    )
+    batch.add_argument(
+        "--timeout",
+        type=float,
+        help="active seconds per document before its worker is stopped (0 = off)",
+    )
+
+    ev = sub.add_parser("evaluate", help="compare scanner output with faculty references")
+    ev.add_argument("dataset", type=Path, help="folder with documents.csv [+ annotations.csv]")
+    ev.add_argument("-o", "--output", type=Path, required=True, help="private report folder")
+    ev.add_argument("--split", default="evaluation", choices=["evaluation", "calibration"])
+    ev.add_argument("--variant", default="A", choices=["A", "B"], help="B = with AI")
+    ev.add_argument("--documents", type=Path, help="root for document paths (default: dataset)")
+    ev.add_argument("--allow-synced-output", action="store_true")
+
+    bench = sub.add_parser("benchmark-ai", help="A (scanner) vs B (scanner + AI) on references")
+    bench.add_argument("dataset", type=Path)
+    bench.add_argument("-o", "--output", type=Path, required=True)
+    bench.add_argument("--split", default="evaluation", choices=["evaluation", "calibration"])
+    bench.add_argument("--documents", type=Path)
+    bench.add_argument("--allow-synced-output", action="store_true")
+
+    split = sub.add_parser("eval-split", help="assign and freeze calibration/evaluation splits")
+    split.add_argument("dataset", type=Path)
+    split.add_argument("--eval-fraction", type=float, default=0.3)
+    split.add_argument("--seed", type=int, default=13)
+
+    sub.add_parser(
+        "ai-check", help="check the AI provider policy and test it on a FICTIONAL resume"
+    )
     return parser
 
 
@@ -214,6 +278,159 @@ def _run_review(args: argparse.Namespace, settings) -> int:  # type: ignore[no-u
     return 0
 
 
+def _run_annotate(args: argparse.Namespace, settings) -> int:  # type: ignore[no-untyped-def]
+    from pps_ats.analysis.identity import load_manifest
+    from pps_ats.reports.annotate import annotate_pdf
+    from pps_ats.reports.findings_report import write_findings_report
+    from pps_ats.schemas.common import FileFormat
+    from pps_ats.scoring.engine import score_file
+
+    manifest = load_manifest(args.manifest) if args.manifest else None
+    analysis, scoring = score_file(args.file, settings, manifest)
+    if analysis.analysis_status == "skipped":
+        print(f"{args.file.name}: not analysed ({analysis.skipped_reason})", file=sys.stderr)
+        return 1
+    if analysis.document.detected_format is FileFormat.PDF:
+        report = annotate_pdf(args.file, analysis, args.output, scoring, settings.reports)
+        print(
+            f"{args.file.name}: annotated copy -> {args.output} {report.counts} "
+            f"original_unchanged={report.source_unchanged}",
+            file=sys.stderr,
+        )
+    else:
+        write_findings_report(analysis, scoring, args.output)
+        print(f"{args.file.name}: findings report -> {args.output}", file=sys.stderr)
+    return 0
+
+
+def _run_batch(args: argparse.Namespace, settings) -> int:  # type: ignore[no-untyped-def]
+    from pps_ats.batch.runner import BatchError, BatchOptions, run_batch
+
+    opts = BatchOptions(
+        input_dir=args.input_dir,
+        output_dir=args.output,
+        manifest=args.manifest,
+        workers=args.workers,
+        retry_failed=args.retry_failed,
+        force=args.force,
+        limit=args.limit,
+        allow_synced_output=args.allow_synced_output,
+        report_only=args.report_only,
+        break_lock=args.break_lock,
+        timeout_s=args.timeout,
+    )
+    try:
+        summary = run_batch(opts, settings)
+    except BatchError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(
+        f"run {summary.run_id} {summary.state}: total={summary.total} "
+        f"processed={summary.processed} reused={summary.reused} failed={summary.failed} "
+        f"not_processed={summary.not_processed} -> {args.output / (summary.workbook or '')}",
+        file=sys.stderr,
+    )
+    return 130 if summary.state == "interrupted" else 0
+
+
+def _private_output(path: Path, allow: bool, settings) -> str | None:  # type: ignore[no-untyped-def]
+    from pps_ats.batch.runner import synced_location
+
+    synced = synced_location(path, settings.batch.synced_markers)
+    if synced and not allow:
+        return (
+            f"output folder is inside a cloud-synced location ({synced}); evaluation reports "
+            "contain student text. Use a local folder or --allow-synced-output."
+        )
+    return None
+
+
+def _run_evaluate(args: argparse.Namespace, settings) -> int:  # type: ignore[no-untyped-def]
+    from pps_ats.evaluation.dataset import DatasetError, load_dataset
+    from pps_ats.evaluation.runner import run_benchmark, run_evaluation
+    from pps_ats.scoring.llm import AIConfigError
+
+    problem = _private_output(args.output, args.allow_synced_output, settings)
+    if problem:
+        print(f"error: {problem}", file=sys.stderr)
+        return 2
+    try:
+        dataset = load_dataset(args.dataset, args.documents, set(settings.evaluation.labels))
+        if args.command == "benchmark-ai":
+            decision = run_benchmark(dataset, settings, args.output, args.split)
+            print(
+                f"benchmark: {decision['decision']} ({'; '.join(decision['reasons'])}) "
+                f"-> {args.output / 'benchmark.md'}",
+                file=sys.stderr,
+            )
+            return 0
+        report = run_evaluation(dataset, settings, args.output, args.split, args.variant)
+    except (DatasetError, AIConfigError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(
+        f"evaluation {report.variant} on {report.split}: {report.documents} documents, "
+        f"total MAE={report.total_error.mae} (n={report.total_error.n}), "
+        f"issue recall={report.issue_overall.recall}, validation errors="
+        f"{len(report.validation_errors)} -> {args.output / 'evaluation.md'}",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def _run_eval_split(args: argparse.Namespace) -> int:
+    from pps_ats.evaluation.dataset import DatasetError, freeze_split
+
+    try:
+        counts = freeze_split(args.dataset, args.eval_fraction, args.seed)
+    except (DatasetError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(f"split frozen: {counts} -> {args.dataset / 'split_lock.json'}", file=sys.stderr)
+    return 0
+
+
+def _run_ai_check(settings) -> int:  # type: ignore[no-untyped-def]
+    """Policy check + one request with a fictional resume (never student data)."""
+    from pps_ats.scoring.ai import AIEvaluationRequest, verify_response
+    from pps_ats.scoring.llm import AIConfigError, OpenAICompatibleEvaluator
+
+    cfg = settings.scoring.ai
+    print(f"enabled={cfg.enabled} provider={cfg.provider} model={cfg.model!r}", file=sys.stderr)
+    try:
+        evaluator = OpenAICompatibleEvaluator(cfg)
+    except AIConfigError as exc:
+        print(f"policy: REFUSED - {exc}", file=sys.stderr)
+        return 2
+    print(f"policy: OK ({evaluator.endpoint})", file=sys.stderr)
+    request = AIEvaluationRequest(
+        rubric_version=settings.scoring.rubric_version,
+        sections={
+            "summary": "Seeking a job in a good company where I can grow my skills.",
+            "projects": "Library App - made an app for library. Used Java.",
+        },
+        deterministic_scores={c: 8.0 for c in settings.scoring.criteria},
+        finding_rules=["CQ_PROJECT_VAGUE"],
+    )
+    try:
+        response = evaluator.evaluate(request)
+    except RuntimeError as exc:
+        print(f"request: FAILED - {exc}", file=sys.stderr)
+        return 1
+    kept, observations, rejected = verify_response(
+        response, request, set(settings.scoring.criteria), cfg.min_evidence_chars
+    )
+    print(
+        f"request: OK model={response.model_id} proposals={len(response.proposals)} "
+        f"(evidence-backed {len(kept)}) observations={len(response.observations)} "
+        f"(evidence-backed {len(observations)}) rejected={len(rejected)}",
+        file=sys.stderr,
+    )
+    for reason in rejected:
+        print(f"  rejected: {reason}", file=sys.stderr)
+    return 0
+
+
 def _run_analyze(args: argparse.Namespace, settings) -> int:  # type: ignore[no-untyped-def]
     from pps_ats.analysis.identity import load_manifest
     from pps_ats.analysis.orchestrator import analyze_file
@@ -267,6 +484,16 @@ def main(argv: list[str] | None = None) -> int:
             return _run_score(args, settings)
         if args.command == "review":
             return _run_review(args, settings)
+        if args.command == "annotate":
+            return _run_annotate(args, settings)
+        if args.command == "batch":
+            return _run_batch(args, settings)
+        if args.command in ("evaluate", "benchmark-ai"):
+            return _run_evaluate(args, settings)
+        if args.command == "eval-split":
+            return _run_eval_split(args)
+        if args.command == "ai-check":
+            return _run_ai_check(settings)
         result = scan_file(args.file, settings)
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)

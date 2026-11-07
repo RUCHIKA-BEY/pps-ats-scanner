@@ -196,6 +196,21 @@ class AIScoringSettings(BaseModel):
     min_confidence: float = 0.7  # below this the AI proposal is recorded but not applied
     review_disagreement: float = 1.5  # |proposal| >= this => manual review
     redact_personal_data: bool = True
+    require_evidence: bool = True  # proposals/observations need a verbatim quote from the text
+    min_evidence_chars: int = 8
+    # Provider (Milestone 5). "local": an OpenAI-compatible server on this computer
+    # (Ollama, llama.cpp server, LM Studio). "external": a remote API; refused unless
+    # allow_external = true AND external_authorised_by names who approved it.
+    provider: str = "none"  # "none" | "local" | "external"
+    base_url: str = "http://127.0.0.1:11434/v1"
+    model: str = ""
+    request_timeout_s: float = 120.0
+    temperature: float = 0.0
+    seed: int = 7
+    max_section_chars: int = 3000
+    allow_external: bool = False
+    external_authorised_by: str = ""
+    api_key_env: str = "PPS_ATS_AI_API_KEY"  # read only for the external provider
 
 
 class ATSScoringSettings(BaseModel):
@@ -223,6 +238,63 @@ class ScoringSettings(BaseModel):
     ats: ATSScoringSettings = Field(default_factory=ATSScoringSettings)
 
 
+# --------------------------------------------------------------------------- Milestone 4
+
+
+class ReportSettings(BaseModel):
+    annotate_pdf: bool = True  # write an annotated copy of each analysed PDF
+    findings_report: str = "docx"  # separate findings PDF for: "docx" | "all" | "none"
+    clip_margin_x: float = 2.0  # widen the finding's span box when searching for its text
+    clip_margin_y: float = 1.0
+    excel_text_limit: int = 500  # max characters per Excel text cell
+
+
+class BatchSettings(BaseModel):
+    workers: int = 1  # documents processed in parallel (separate processes)
+    max_workers: int = 4  # hard upper bound for --workers
+    # Active seconds one document may take before its worker is stopped (0 = no limit and
+    # no isolation: documents then run inside the main process).
+    document_timeout_s: float = 120.0
+    suspend_gap_s: float = 15.0  # a longer pause between checks = computer was asleep
+    prevent_sleep: bool = True  # Windows: keep the PC awake while a batch runs
+    ignore_names: list[str] = Field(
+        default_factory=lambda: ["desktop.ini", "thumbs.db", ".ds_store"]
+    )
+    ignore_prefixes: list[str] = Field(default_factory=lambda: ["~$", "._"])
+    # Output folders whose path contains one of these are treated as cloud-synced.
+    synced_markers: list[str] = Field(
+        default_factory=lambda: ["onedrive", "dropbox", "google drive", "icloud"]
+    )
+
+
+# --------------------------------------------------------------------------- Milestone 5
+
+
+class AIAdoptionSettings(BaseModel):
+    min_documents: int = 30
+    min_total_mae_improvement: float = 0.25
+    max_criterion_mae_increase: float = 0.0
+    max_high_severity_fn_increase: int = 0
+    max_high_severity_fp_increase: int = 0
+    require_ci_excludes_zero: bool = True
+
+
+class FineTuningSettings(BaseModel):
+    min_paired_documents: int = 500
+    min_evaluation_documents: int = 100
+
+
+class EvaluationSettings(BaseModel):
+    text_match_threshold: float = 0.5
+    high_severity_levels: list[str] = Field(default_factory=lambda: ["high"])
+    high_severity_classes: list[str] = Field(default_factory=lambda: ["definite_defect"])
+    bootstrap_samples: int = 2000
+    seed: int = 13
+    labels: dict[str, list[str]] = Field(default_factory=dict)
+    ai_adoption: AIAdoptionSettings = Field(default_factory=AIAdoptionSettings)
+    fine_tuning: FineTuningSettings = Field(default_factory=FineTuningSettings)
+
+
 class Settings(BaseModel):
     limits: LimitsSettings = Field(default_factory=LimitsSettings)
     text: TextSettings = Field(default_factory=TextSettings)
@@ -232,6 +304,9 @@ class Settings(BaseModel):
     sections: SectionSettings = Field(default_factory=SectionSettings)
     analysis: AnalysisSettings = Field(default_factory=AnalysisSettings)
     scoring: ScoringSettings = Field(default_factory=ScoringSettings)
+    reports: ReportSettings = Field(default_factory=ReportSettings)
+    batch: BatchSettings = Field(default_factory=BatchSettings)
+    evaluation: EvaluationSettings = Field(default_factory=EvaluationSettings)
     source: str = "built-in"
 
 

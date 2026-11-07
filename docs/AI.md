@@ -1,0 +1,63 @@
+# Milestone 5 — optional AI assistance
+
+Disabled by default. When enabled, a model only *assists* with context the deterministic
+scanner cannot judge:
+
+* career-objective clarity and relevance (`career_objective`)
+* quality of project descriptions (`project_description`)
+* professional tone (`professional_tone`)
+* contextual grammar (`contextual_grammar`)
+* evidence-backed correction suggestions (in each observation)
+
+## What the model can and cannot do
+
+| | |
+|---|---|
+| sees | redacted section text (names, e-mails, phones, profile URLs, student IDs replaced), rubric descriptors, deterministic scores, scanner rule ids |
+| never sees | invalid, non-resume or unreadable documents (they are not analysed) |
+| may propose | per criterion an adjustment, clipped to ±`max_adjustment` (default 1), applied only if `confidence ≥ min_confidence` |
+| must provide | JSON with a verbatim quote for every claim; quotes not found in the text are rejected and listed in `ai_rejected` |
+| cannot | change validation, findings, review flags of the scanner, or final marks (faculty decide); a large proposal sends the document to review |
+| on failure | timeouts, non-JSON output or schema errors keep the deterministic marks (`ai_failed` in the audit) |
+
+Results: `CriterionScore.ai` (proposed/applied/confidence/evidence),
+`ScoringResult.ai_observations` (advisory notes) and `ai_rejected`.
+
+## Configuration (`[scoring.ai]`)
+
+Local model (recommended): any OpenAI-compatible server on this computer, e.g. Ollama.
+
+```toml
+[scoring.ai]
+enabled = true
+provider = "local"
+base_url = "http://127.0.0.1:11434/v1"   # loopback only; anything else is refused
+model = "qwen2.5:7b-instruct"           # whatever the local server has pulled
+request_timeout_s = 120
+temperature = 0.0
+seed = 7
+```
+
+External provider (only with institutional approval):
+
+```toml
+provider = "external"
+base_url = "https://..."                # https required
+allow_external = true
+external_authorised_by = "Name, role, date of approval"
+api_key_env = "PPS_ATS_AI_API_KEY"      # key read from the environment, never the config
+```
+
+Check the setup without any student data (sends a fictional resume):
+
+```powershell
+python -m pps_ats --config config\local.toml ai-check
+```
+
+With AI enabled the batch runs one worker and adds `request_timeout_s` to the
+per-document timeout.
+
+## Keep it disabled unless the benchmark says otherwise
+
+Run `benchmark-ai` on the held-out faculty-corrected set (see `docs/EVALUATION.md`).
+Enable AI for a faculty pilot only if the decision is `eligible_for_faculty_pilot`.

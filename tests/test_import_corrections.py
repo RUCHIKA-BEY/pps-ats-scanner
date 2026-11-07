@@ -204,7 +204,7 @@ def test_finalize_requires_decisions_then_feeds_the_evaluator(imported, settings
     bad = [dict(r) for r in rows]
     bad[0]["final_label"] = "typo"  # not a canonical label
     write(ds / "bad.csv", bad)
-    done = finalize_annotations(ds, settings)
+    done = finalize_annotations(ds, settings, accept_suggestions=True)
     assert done.written == 8 and not done.invalid and not done.unresolved
     ann = read(ds / "annotations.csv")
     assert {a["source"] for a in ann} == {"faculty"}
@@ -222,7 +222,7 @@ def test_invalid_review_rows_block_finalize(imported, settings, tmp_path):
     ds = tmp_path / "ds"
     import_corrections(intake, ds, settings)
     rows = read(ds / CANDIDATES)
-    rows[0]["final_label"] = "typo"
+    rows[0].update(final_label="typo", reviewer_decision="accept")
     write(ds / CANDIDATES, rows)
     result = finalize_annotations(ds, settings, allow_unresolved=True)
     assert any("not canonical" in i for i in result.invalid)

@@ -191,6 +191,11 @@ def _build_parser() -> argparse.ArgumentParser:
     split.add_argument("dataset", type=Path)
     split.add_argument("--eval-fraction", type=float, default=0.3)
     split.add_argument("--seed", type=int, default=13)
+    split.add_argument("--eval-count", type=int, help="exact number of evaluation documents")
+    split.add_argument("--stratify-by", help="documents.csv column to balance (e.g. "
+                       "scanner_input_status)")  # fmt: skip
+    split.add_argument("--group-by", help="documents.csv column kept within one split "
+                       "(e.g. group_id from reference-prepare)")  # fmt: skip
 
     sub.add_parser(
         "ai-check", help="check the AI provider policy and test it on a FICTIONAL resume"
@@ -218,6 +223,36 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="leave out rows still awaiting a decision (they are counted, not guessed)",
     )
+    fin.add_argument(
+        "--accept-suggestions",
+        action="store_true",
+        help="treat undecided auto-mapped rows as accepted (off by default)",
+    )
+    prep = sub.add_parser(
+        "reference-prepare",
+        help="pseudonymised, integrity-checked reference copy of a corrected-only dataset",
+    )
+    prep.add_argument("source", type=Path, help="dataset written by import-corrections")
+    prep.add_argument("-o", "--output", type=Path, required=True, help="new reference folder")
+    prep.add_argument("--key-dir", type=Path, required=True, help="private id key (separate)")
+    prep.add_argument("--salvage-log", type=Path, help="recovery log with SHA-256 per file")
+    prep.add_argument("--intake", type=Path, help="intake folder (for the private id key)")
+    prep.add_argument("--duplicate-threshold", type=float, default=0.6)
+    prep.add_argument("--allow-synced-output", action="store_true")
+
+    for name, text in (
+        ("review-sheet", "build review/annotation_review.xlsx (one sheet per split)"),
+        ("review-status", "counts of confirmed / rejected / uncertain / unreviewed rows"),
+        ("verify-reference", "re-check hashes and clean scanner inputs (counts only)"),
+        ("freeze-calibration", "record the configuration used for calibration"),
+    ):
+        cmd = sub.add_parser(name, help=text)
+        cmd.add_argument("reference", type=Path)
+        if name == "review-sheet":
+            cmd.add_argument("--force", action="store_true", help="rebuild (loses decisions)")
+    fr = sub.add_parser("finalize-review", help="reference annotations from accepted rows")
+    fr.add_argument("reference", type=Path)
+    fr.add_argument("--split", required=True, choices=["calibration", "evaluation"])
     return parser
 
 
@@ -445,7 +480,9 @@ def _run_finalize(args: argparse.Namespace, settings) -> int:  # type: ignore[no
     from pps_ats.evaluation.importer import finalize_annotations
 
     try:
-        s = finalize_annotations(args.dataset, settings, args.allow_unresolved)
+        s = finalize_annotations(
+            args.dataset, settings, args.allow_unresolved, args.accept_suggestions
+        )
     except (OSError, KeyError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -466,11 +503,69 @@ def _run_finalize(args: argparse.Namespace, settings) -> int:  # type: ignore[no
     return 0
 
 
+def _run_reference(args: argparse.Namespace, settings) -> int:  # type: ignore[no-untyped-def]
+    from pps_ats.evaluation import reference as ref
+
+    try:
+        if args.command == "reference-prepare":
+            problem = _private_output(args.output, args.allow_synced_output, settings)
+            problem = problem or _private_output(args.key_dir, args.allow_synced_output, settings)
+            if problem:
+                print(f"error: {problem}", file=sys.stderr)
+                return 2
+            m = ref.prepare_reference(
+                args.source,
+                args.output,
+                args.key_dir,
+                settings,
+                args.salvage_log,
+                args.intake,
+                args.duplicate_threshold,
+            )
+            print(
+                f"reference: {m['documents_total']} documents ({m['eligible']} eligible, "
+                f"ineligible {m['ineligible']}), {m['candidates']} candidates, salvage-log "
+                f"matches {m['salvage_log_matches']}/{m['salvage_log_complete_entries']}, "
+                f"duplicates {m['duplicates']} -> {args.output}",
+                file=sys.stderr,
+            )
+        elif args.command == "review-sheet":
+            path = ref.build_review_workbook(args.reference, settings, args.force)
+            print(f"review workbook -> {path}", file=sys.stderr)
+        elif args.command == "review-status":
+            st = ref.review_status(args.reference, settings)
+            for split, counts in st.by_split.items():
+                print(f"{split}: {counts}", file=sys.stderr)
+            for problem in st.invalid[:20]:
+                print(f"invalid: {problem}", file=sys.stderr)
+        elif args.command == "verify-reference":
+            rep = ref.verify_reference(args.reference, settings)
+            print(json.dumps(rep.__dict__, indent=2), file=sys.stderr)
+            return 1 if rep.failures else 0
+        elif args.command == "finalize-review":
+            done = ref.finalize_review(args.reference, settings, args.split)
+            print(f"{args.split}: {done}", file=sys.stderr)
+        elif args.command == "freeze-calibration":
+            frozen = ref.freeze_calibration(args.reference, settings)
+            print(f"calibration frozen: {frozen['fingerprint']}", file=sys.stderr)
+    except (ref.ReferenceError, OSError, KeyError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
 def _run_eval_split(args: argparse.Namespace) -> int:
     from pps_ats.evaluation.dataset import DatasetError, freeze_split
 
     try:
-        counts = freeze_split(args.dataset, args.eval_fraction, args.seed)
+        counts = freeze_split(
+            args.dataset,
+            args.eval_fraction,
+            args.seed,
+            eval_count=args.eval_count,
+            stratify_by=args.stratify_by,
+            group_by=args.group_by,
+        )
     except (DatasetError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -586,6 +681,15 @@ def main(argv: list[str] | None = None) -> int:
             return _run_import(args, settings)
         if args.command == "finalize-annotations":
             return _run_finalize(args, settings)
+        if args.command in (
+            "reference-prepare",
+            "review-sheet",
+            "review-status",
+            "verify-reference",
+            "finalize-review",
+            "freeze-calibration",
+        ):
+            return _run_reference(args, settings)
         result = scan_file(args.file, settings)
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)

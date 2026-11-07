@@ -482,9 +482,14 @@ class FinalizeSummary:
 
 
 def finalize_annotations(
-    dataset: Path, settings: Settings, allow_unresolved: bool = False
+    dataset: Path,
+    settings: Settings,
+    allow_unresolved: bool = False,
+    accept_suggestions: bool = False,
 ) -> FinalizeSummary:
-    """Write ``annotations.csv`` from reviewed candidates."""
+    """Write ``annotations.csv`` from reviewed candidates. Only rows with
+    ``reviewer_decision = accept`` are used, unless ``accept_suggestions`` is given
+    explicitly (then undecided ``auto_mapped`` rows count as accepted)."""
     dataset = Path(dataset)
     rows = _rows(dataset / CANDIDATES)
     labels = set(settings.evaluation.labels)
@@ -499,7 +504,7 @@ def finalize_annotations(
         if decision not in ("", "accept"):
             summary.invalid.append(f"{r['candidate_id']}: reviewer_decision {decision!r}")
             continue
-        if decision == "" and status != "auto_mapped":
+        if decision == "" and not (accept_suggestions and status == "auto_mapped"):
             summary.unresolved.append(r["candidate_id"])
             continue
         label = r.get("final_label", "").lower()

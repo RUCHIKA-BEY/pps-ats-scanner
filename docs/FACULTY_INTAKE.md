@@ -145,3 +145,39 @@ python -m pps_ats evaluate "D:\pps_private\corrected_only\pilot5" -o "D:\pps_pri
 
 With 5 documents this checks the workflow, not accuracy. For the full set, freeze a real
 split (e.g. `--eval-fraction 0.4`) and tune keyword/pattern lists only on calibration rows.
+
+## 6. Frozen reference dataset and annotation review
+
+```powershell
+$B = "D:\pps_private\corrected_only"
+# 1. pseudonymous, integrity-checked copy (P001...); id key kept in a separate folder
+python -m pps_ats reference-prepare "$B\dataset" -o "$B\reference_v1" --key-dir "$B\_private_key" --salvage-log "$B\salvage_log.csv" --intake "$B\intake"
+python -m pps_ats verify-reference "$B\reference_v1"
+# 2. freeze the split once (exact count, balanced by eligibility, duplicates kept together)
+python -m pps_ats eval-split "$B\reference_v1" --eval-count 28 --seed 2026 --stratify-by scanner_input_status --group-by group_id
+# 3. review workbook: reference_v1\review\annotation_review.xlsx
+python -m pps_ats review-sheet "$B\reference_v1"
+python -m pps_ats review-status "$B\reference_v1"
+# 4. after the CALIBRATION sheet is complete
+python -m pps_ats finalize-review "$B\reference_v1" --split calibration
+python -m pps_ats evaluate "$B\reference_v1" --split calibration -o "$B\eval_calibration"
+#    (tune keywords/patterns here if needed, using calibration results only)
+python -m pps_ats freeze-calibration "$B\reference_v1"
+# 5. after the EVALUATION sheet is reviewed independently (another reviewer if possible)
+python -m pps_ats finalize-review "$B\reference_v1" --split evaluation
+python -m pps_ats evaluate "$B\reference_v1" -o "$B\eval_heldout"
+```
+
+Rules enforced by the tools:
+
+* Suggested labels are never accepted automatically; `final_label` starts empty.
+  `finalize-review` refuses a split while any row is unreviewed, `unsure` or invalid
+  (an accepted row needs `final_label`, `faculty_intent` and `reviewer_id`).
+* `faculty_intent = recommendation` keeps advice out of the high-severity error counts;
+  labels with no scanner rule (`section_title`, `section_order`, `other_feedback`) are
+  reported as "outside scanner scope", never as scanner misses.
+* Annotations on ineligible documents (image-only, needs review) are kept as feedback but
+  those documents are not evaluated.
+* The held-out evaluation is refused until `freeze-calibration` has run, the configuration
+  is unchanged since, and the evaluation sheet is finalised (annotations unchanged after).
+* No faculty marks: every report states it measures issue-detection agreement only.

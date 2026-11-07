@@ -101,6 +101,17 @@ def evaluate(
     for label, count in dataset.unknown_labels.items():
         report.warnings.append(f"faculty label {label!r} ({count}x) has no scanner mapping")
     compare(predictions, report, settings.evaluation, settings.scoring, include_ai=use_ai)
+    if report.total_error.n == 0:
+        report.warnings.insert(
+            0,
+            "NO FACULTY MARKS: this report measures issue-detection agreement only; it says "
+            "nothing about numerical grading accuracy.",
+        )
+    if report.outside_scanner_scope:
+        report.warnings.append(
+            "faculty feedback outside the scanner's scope (no rule yet, not counted as "
+            f"misses): {report.outside_scanner_scope}"
+        )
     report.fine_tuning_readiness = fine_tuning_readiness(dataset.documents, settings.evaluation)
     return report
 
@@ -197,6 +208,12 @@ def run_evaluation(
     variant: str = "A",
     evaluator: ContextualEvaluator | None = None,
 ) -> EvaluationReport:
+    if split == "evaluation":
+        from pps_ats.evaluation.reference import held_out_gate
+
+        blocked = held_out_gate(dataset.root, settings)
+        if blocked:
+            raise ValueError("held-out evaluation is not allowed yet: " + "; ".join(blocked))
     report = evaluate(dataset, settings, split, variant, evaluator)
     write_report(report, output)
     return report
@@ -209,6 +226,12 @@ def run_benchmark(
     split: str = "evaluation",
     evaluator: ContextualEvaluator | None = None,
 ) -> dict:
+    if split == "evaluation":
+        from pps_ats.evaluation.reference import held_out_gate
+
+        blocked = held_out_gate(dataset.root, settings)
+        if blocked:
+            raise ValueError("held-out evaluation is not allowed yet: " + "; ".join(blocked))
     a = evaluate(dataset, settings, split, "A")
     b = evaluate(dataset, settings, split, "B", evaluator)
     decision = decide(a, b, settings)

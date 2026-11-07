@@ -396,6 +396,15 @@ def _source_type(c: Candidate) -> str:
     return {"scanned_page": "image_only_page", "drawing": "red_drawing"}.get(c.channel, c.channel)
 
 
+def document_id_for(path: Path, settings: Settings) -> str:
+    """Document id derived from a corrected PDF's file name (suffixes stripped)."""
+    doc_id = _strip_suffix(path.stem, settings.evaluation.import_.corrected_suffixes).strip()
+    return (
+        re.sub(r"[^\w.-]+", "_", doc_id).strip("_")
+        or hashlib.sha1(path.name.encode()).hexdigest()[:8]
+    )
+
+
 def import_corrected_only(
     intake: Path, dataset: Path, settings: Settings, force: bool = False
 ) -> CorrectedOnlySummary:
@@ -420,11 +429,7 @@ def import_corrected_only(
         if path.suffix.lower() != ".pdf":
             summary.problems.append(f"{path.name}: not a PDF, skipped")
             continue
-        doc_id = _strip_suffix(path.stem, settings.evaluation.import_.corrected_suffixes).strip()
-        doc_id = (
-            re.sub(r"[^\w.-]+", "_", doc_id).strip("_")
-            or hashlib.sha1(path.name.encode()).hexdigest()[:8]
-        )
+        doc_id = document_id_for(path, settings)
         if doc_id in pdfs:
             summary.problems.append(f"{path.name}: duplicate document id {doc_id!r}, skipped")
             continue

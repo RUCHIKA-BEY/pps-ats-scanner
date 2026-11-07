@@ -86,6 +86,9 @@ class EvaluationReport(BaseModel):
     validation_errors: list[dict] = Field(default_factory=list)
     issue_metrics: dict[str, IssueCounts] = Field(default_factory=dict)
     issue_overall: IssueCounts = Field(default_factory=IssueCounts)
+    # faculty labels with no scanner rule: kept as feedback, not counted as scanner misses
+    outside_scanner_scope: dict[str, int] = Field(default_factory=dict)
+    recommendations: int = 0  # faculty annotations marked as advice, not defects
     high_severity: IssueCounts = Field(default_factory=IssueCounts)
     issue_rows: list[dict] = Field(default_factory=list)
     criterion_errors: dict[str, ErrorStats] = Field(default_factory=dict)
@@ -197,8 +200,10 @@ def match_document(doc: ReferenceDocument, found: list[Detection], threshold: fl
             "page": (ann.page if ann else None) or (det.page if det else None),
             "similarity": round(score, 2) if score is not None else None,
             "high_severity": bool(
-                (ann and ann.severity == "high") or (det and det.high and not ann)
+                (ann and ann.severity == "high" and ann.intent != "recommendation")
+                or (det and det.high and not ann)
             ),
+            "intent": ann.intent if ann else None,
         }
 
     for score, ai, di in pairs:
@@ -358,10 +363,24 @@ def compare(
     report.issue_metrics = {
         label: _counts([r for r in issue_rows if r["label"] == label]) for label in labels
     }
-    report.issue_overall = _counts(
-        [r for r in issue_rows if not r["label"].startswith("unmapped:")]
+    out_of_scope = {k for k, v in cfg.labels.items() if not v}
+    in_scope = [
+        r
+        for r in issue_rows
+        if not r["label"].startswith("unmapped:") and r["label"] not in out_of_scope
+    ]
+    report.outside_scanner_scope = dict(
+        sorted(
+            {
+                label: sum(1 for r in issue_rows if r["label"] == label)
+                for label in out_of_scope
+                if any(r["label"] == label for r in issue_rows)
+            }.items()
+        )
     )
-    report.high_severity = _counts([r for r in issue_rows if r["high_severity"]])
+    report.recommendations = sum(1 for r in issue_rows if r.get("intent") == "recommendation")
+    report.issue_overall = _counts(in_scope)
+    report.high_severity = _counts([r for r in in_scope if r["high_severity"]])
     report.criterion_errors = {
         c: error_stats(pairs, 1.0, scoring) for c, pairs in crit_pairs.items()
     }

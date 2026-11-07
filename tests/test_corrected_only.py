@@ -189,7 +189,7 @@ def test_only_clean_documents_reach_the_evaluation(run, settings, tmp_path):
         writer = csv.DictWriter(handle, fieldnames=list(reviewed[0]))
         writer.writeheader()
         writer.writerows(reviewed)
-    assert finalize_annotations(ds, settings).written == 2
+    assert finalize_annotations(ds, settings, accept_suggestions=True).written == 2
     freeze_split(ds, eval_fraction=1.0)
     dataset = load_dataset(ds, labels=set(settings.evaluation.labels))
     assert {d.document_id for d in dataset.documents} == {"C01", "C02"}

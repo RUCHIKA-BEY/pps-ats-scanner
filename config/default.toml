@@ -575,6 +575,7 @@ uncertain_structure = ["SEC_UNCERTAIN", "FMT_GARBLED_TEXT"]
 # Faculty labels with no scanner rule yet: always counted as missed, never as detected.
 section_title = []               # "title as skills", "rename section to ..."
 section_order = []               # "mention before skills", "move ... above ..."
+other_feedback = []              # faculty advice that fits no label (kept, not scored)
 
 # AI assistance is recommended for a pilot only if ALL of these hold on the held-out split.
 [evaluation.ai_adoption]

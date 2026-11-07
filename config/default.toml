@@ -508,3 +508,20 @@ IDENTITY_NAME_NOT_FOUND = 5
 [scoring.ats.bands]
 good = 80
 fair = 60
+
+# ---------------------------------------------------------------- Milestone 4: reports
+[reports]
+annotate_pdf = true          # annotated copy of each analysed PDF (original never modified)
+findings_report = "docx"     # separate findings PDF for "docx" | "all" | "none"
+clip_margin_x = 2.0          # widen a finding's span box (pt) when searching for its text
+clip_margin_y = 1.0
+excel_text_limit = 500
+
+# ---------------------------------------------------------------- Milestone 4: batch
+[batch]
+workers = 1                  # parallel worker processes (each opens one document at a time)
+max_workers = 4              # upper bound for --workers
+max_tasks_per_child = 50     # recycle worker processes to bound memory
+ignore_names = ["desktop.ini", "thumbs.db", ".ds_store"]   # OS files, listed in the summary
+ignore_prefixes = ["~$", "._"]                               # Office lock / macOS resource files
+synced_markers = ["onedrive", "dropbox", "google drive", "icloud"]

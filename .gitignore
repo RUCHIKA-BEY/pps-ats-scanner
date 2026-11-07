@@ -10,7 +10,8 @@ __pycache__/
 
 data/
 outputs/
-reports/
+/reports/
+# (anchored: src/pps_ats/reports/ is source code)
 checkpoints/
 *.log
 
@@ -71,3 +72,12 @@ models/
 *.bin
 *.onnx
 *.ckpt
+
+# Milestone 4 batch outputs (should live outside the repo; ignored if run here anyway)
+annotated/
+findings_reports/
+batch_runs/
+manifest.jsonl
+batch_summary.json
+*.annotated.pdf
+*.findings.pdf

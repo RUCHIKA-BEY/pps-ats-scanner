@@ -5,6 +5,8 @@ python -m pps_ats inspect FILE            # metadata/validation/sections, no doc
 python -m pps_ats analyze FILE [--output analysis.json] [--manifest students.csv]
 python -m pps_ats score FILE [--output score.json] [--audit-log audit/ca1.jsonl]
 python -m pps_ats review score.json --reviewer F01 --reason "..." --override content_relevance=7
+python -m pps_ats annotate FILE --output annotated.pdf
+python -m pps_ats batch INPUT_DIR --output PRIVATE_OUTPUT_DIR [--manifest m.csv] [--workers 2]
 """
 
 from __future__ import annotations
@@ -129,6 +131,35 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     review.add_argument("-o", "--output", type=Path, help="updated JSON (default: in place)")
     review.add_argument("--audit-log", type=Path, help="append review events to this JSONL")
+
+    annotate = sub.add_parser(
+        "annotate", help="annotated PDF copy (PDF) or findings report (DOCX) for one file"
+    )
+    annotate.add_argument("file", type=Path)
+    annotate.add_argument("-o", "--output", type=Path, required=True, help="output PDF path")
+    annotate.add_argument("--manifest", type=Path, help="optional identity manifest CSV")
+
+    batch = sub.add_parser(
+        "batch", help="resumable batch: results JSON, annotated PDFs, Excel workbook"
+    )
+    batch.add_argument("input_dir", type=Path)
+    batch.add_argument("-o", "--output", type=Path, required=True, help="private output folder")
+    batch.add_argument("--manifest", type=Path, help="identity manifest CSV (student IDs)")
+    batch.add_argument("--workers", type=int, help="parallel processes (bounded by config)")
+    batch.add_argument("--retry-failed", action="store_true", help="re-run failed files")
+    batch.add_argument("--force", action="store_true", help="re-process unchanged files too")
+    batch.add_argument("--limit", type=int, help="process at most N files in this run")
+    batch.add_argument(
+        "--report-only", action="store_true", help="rebuild the workbook; process nothing"
+    )
+    batch.add_argument(
+        "--allow-synced-output",
+        action="store_true",
+        help="allow an output folder inside OneDrive/Dropbox/... (not recommended)",
+    )
+    batch.add_argument(
+        "--break-lock", action="store_true", help="remove a stale lock left by a killed run"
+    )
     return parser
 
 
@@ -214,6 +245,60 @@ def _run_review(args: argparse.Namespace, settings) -> int:  # type: ignore[no-u
     return 0
 
 
+def _run_annotate(args: argparse.Namespace, settings) -> int:  # type: ignore[no-untyped-def]
+    from pps_ats.analysis.identity import load_manifest
+    from pps_ats.reports.annotate import annotate_pdf
+    from pps_ats.reports.findings_report import write_findings_report
+    from pps_ats.schemas.common import FileFormat
+    from pps_ats.scoring.engine import score_file
+
+    manifest = load_manifest(args.manifest) if args.manifest else None
+    analysis, scoring = score_file(args.file, settings, manifest)
+    if analysis.analysis_status == "skipped":
+        print(f"{args.file.name}: not analysed ({analysis.skipped_reason})", file=sys.stderr)
+        return 1
+    if analysis.document.detected_format is FileFormat.PDF:
+        report = annotate_pdf(args.file, analysis, args.output, scoring, settings.reports)
+        print(
+            f"{args.file.name}: annotated copy -> {args.output} {report.counts} "
+            f"original_unchanged={report.source_unchanged}",
+            file=sys.stderr,
+        )
+    else:
+        write_findings_report(analysis, scoring, args.output)
+        print(f"{args.file.name}: findings report -> {args.output}", file=sys.stderr)
+    return 0
+
+
+def _run_batch(args: argparse.Namespace, settings) -> int:  # type: ignore[no-untyped-def]
+    from pps_ats.batch.runner import BatchError, BatchOptions, run_batch
+
+    opts = BatchOptions(
+        input_dir=args.input_dir,
+        output_dir=args.output,
+        manifest=args.manifest,
+        workers=args.workers,
+        retry_failed=args.retry_failed,
+        force=args.force,
+        limit=args.limit,
+        allow_synced_output=args.allow_synced_output,
+        report_only=args.report_only,
+        break_lock=args.break_lock,
+    )
+    try:
+        summary = run_batch(opts, settings)
+    except BatchError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(
+        f"run {summary.run_id} {summary.state}: total={summary.total} "
+        f"processed={summary.processed} reused={summary.reused} failed={summary.failed} "
+        f"not_processed={summary.not_processed} -> {args.output / (summary.workbook or '')}",
+        file=sys.stderr,
+    )
+    return 130 if summary.state == "interrupted" else 0
+
+
 def _run_analyze(args: argparse.Namespace, settings) -> int:  # type: ignore[no-untyped-def]
     from pps_ats.analysis.identity import load_manifest
     from pps_ats.analysis.orchestrator import analyze_file
@@ -267,6 +352,10 @@ def main(argv: list[str] | None = None) -> int:
             return _run_score(args, settings)
         if args.command == "review":
             return _run_review(args, settings)
+        if args.command == "annotate":
+            return _run_annotate(args, settings)
+        if args.command == "batch":
+            return _run_batch(args, settings)
         result = scan_file(args.file, settings)
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)

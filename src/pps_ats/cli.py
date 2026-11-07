@@ -249,7 +249,12 @@ def _build_parser() -> argparse.ArgumentParser:
         cmd = sub.add_parser(name, help=text)
         cmd.add_argument("reference", type=Path)
         if name == "review-sheet":
-            cmd.add_argument("--force", action="store_true", help="rebuild (loses decisions)")
+            cmd.add_argument("--force", action="store_true", help="rebuild an untouched workbook")
+            cmd.add_argument(
+                "--discard-decisions",
+                action="store_true",
+                help="with --force: rebuild even though reviewers have entered decisions",
+            )
     fr = sub.add_parser("finalize-review", help="reference annotations from accepted rows")
     fr.add_argument("reference", type=Path)
     fr.add_argument("--split", required=True, choices=["calibration", "evaluation"])
@@ -477,13 +482,13 @@ def _run_import(args: argparse.Namespace, settings) -> int:  # type: ignore[no-u
 
 
 def _run_finalize(args: argparse.Namespace, settings) -> int:  # type: ignore[no-untyped-def]
-    from pps_ats.evaluation.importer import finalize_annotations
+    from pps_ats.evaluation.importer import ImportError_, finalize_annotations
 
     try:
         s = finalize_annotations(
             args.dataset, settings, args.allow_unresolved, args.accept_suggestions
         )
-    except (OSError, KeyError) as exc:
+    except (ImportError_, OSError, KeyError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     for problem in s.invalid:
@@ -530,14 +535,29 @@ def _run_reference(args: argparse.Namespace, settings) -> int:  # type: ignore[n
                 file=sys.stderr,
             )
         elif args.command == "review-sheet":
-            path = ref.build_review_workbook(args.reference, settings, args.force)
+            path = ref.build_review_workbook(
+                args.reference, settings, args.force, args.discard_decisions
+            )
             print(f"review workbook -> {path}", file=sys.stderr)
         elif args.command == "review-status":
             st = ref.review_status(args.reference, settings)
-            for split, counts in st.by_split.items():
-                print(f"{split}: {counts}", file=sys.stderr)
+            for split, c in st.by_split.items():
+                state = (
+                    "FINALISED" if c["finalized"]
+                    else "ready to finalise" if c["ready_to_finalize"]
+                    else f"{c['remaining']} remaining"
+                )  # fmt: skip
+                print(
+                    f"{split:<11} {c['total']:>4} rows | accepted {c['confirmed']:>4} | rejected "
+                    f"{c['rejected']:>4} | unclear {c['unclear']:>4} | not reviewed "
+                    f"{c['unreviewed']:>4} | invalid {c['invalid']:>3} | missing {c['missing']:>3}"
+                    f" -> {state}",
+                    file=sys.stderr,
+                )
             for problem in st.invalid[:20]:
-                print(f"invalid: {problem}", file=sys.stderr)
+                print(f"  fix: {problem}", file=sys.stderr)
+            if len(st.invalid) > 20:
+                print(f"  ... and {len(st.invalid) - 20} more", file=sys.stderr)
         elif args.command == "verify-reference":
             rep = ref.verify_reference(args.reference, settings)
             print(json.dumps(rep.__dict__, indent=2), file=sys.stderr)

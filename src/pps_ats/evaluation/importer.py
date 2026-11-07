@@ -491,6 +491,13 @@ def finalize_annotations(
     ``reviewer_decision = accept`` are used, unless ``accept_suggestions`` is given
     explicitly (then undecided ``auto_mapped`` rows count as accepted)."""
     dataset = Path(dataset)
+    from pps_ats.evaluation.reference import is_gated
+
+    if is_gated(dataset):
+        raise ImportError_(
+            "this is a frozen reference dataset: use review-sheet / finalize-review "
+            "(the workbook review), not finalize-annotations"
+        )
     rows = _rows(dataset / CANDIDATES)
     labels = set(settings.evaluation.labels)
     out: list[dict[str, str]] = []

@@ -171,8 +171,10 @@ python -m pps_ats evaluate "$B\reference_v1" -o "$B\eval_heldout"
 Rules enforced by the tools:
 
 * Suggested labels are never accepted automatically; `final_label` starts empty.
-  `finalize-review` refuses a split while any row is unreviewed, `unsure` or invalid
-  (an accepted row needs `final_label`, `faculty_intent` and `reviewer_id`).
+  `finalize-review` refuses a split while any row is unreviewed, `unclear`, invalid, edited or missing
+  (an accepted row needs `final_label`, `faculty_intent` and `reviewer_id`). Decisions:
+  `accept`, `reject`, `unclear` (`unsure` is read as `unclear`). Step-by-step Excel guide:
+  [REVIEW_GUIDE.md](REVIEW_GUIDE.md).
 * `faculty_intent = recommendation` keeps advice out of the high-severity error counts;
   labels with no scanner rule (`section_title`, `section_order`, `other_feedback`) are
   reported as "outside scanner scope", never as scanner misses.

@@ -44,7 +44,7 @@ REVIEW_DIR = "review"
 REVIEW_BOOK = "annotation_review.xlsx"
 REVIEW_STATE = "review_state.json"
 CAL_FREEZE = "calibration_freeze.json"
-DECISIONS = ("accept", "reject", "unsure")
+DECISIONS = ("accept", "reject", "unclear")
 INTENTS = ("correction_required", "recommendation", "unclear")
 SEVERITIES = ("high", "medium", "low")
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
@@ -438,15 +438,66 @@ def _clean_cell(value: str) -> str:
     return ILLEGAL_CHARACTERS_RE.sub("", value or "")
 
 
-def build_review_workbook(ref: Path, settings: Settings, force: bool = False) -> Path:
+_HINT_COLUMNS = {"suggested_label", "alternative_labels", "suggestion_reason"}
+_LOCKED_CHECK = ("document_id", "page", "faculty_correction")  # must not be edited
+_HEADER_FILL = {"locked": "1F3864", "hint": "595959", "edit": "7F6000"}
+_CELL_FILL = {"hint": "EDEDED", "edit": "FFF2CC"}
+_PROMPTS = {
+    "decision": ("Decision", "accept = real faculty correction; reject = not a correction; "
+                 "unclear = needs discussion (blocks finalisation)"),
+    "final_label": ("Confirmed label", "Your label (pick from the list). The grey "
+                    "suggested_label is only a hint."),
+    "faculty_intent": ("Faculty intent", "correction_required = something is wrong or "
+                       "missing; recommendation = optional advice; unclear"),
+    "final_severity": ("Severity", "high / medium / low (blank = medium)"),
+}  # fmt: skip
+
+
+def _decision(value: str) -> str:
+    """Normalised reviewer decision ('unsure' is accepted as an older spelling)."""
+    v = (value or "").strip().lower()
+    return "unclear" if v == "unsure" else v
+
+
+def _review_fields(name: str) -> str:
+    if name in EDITABLE:
+        return "edit"
+    return "hint" if name in _HINT_COLUMNS else "locked"
+
+
+def _existing_decisions(path: Path) -> int:
+    """Number of rows in an existing workbook where a reviewer entered anything."""
+    if not path.is_file():
+        return 0
+    try:
+        rows = read_review(path.parent.parent)
+    except Exception:  # unreadable workbook: treat as possibly holding work
+        return -1
+    return sum(1 for r in rows if any(r.get(c) for c in EDITABLE))
+
+
+def build_review_workbook(
+    ref: Path, settings: Settings, force: bool = False, discard_decisions: bool = False
+) -> Path:
     ref = Path(ref)
     path = ref / REVIEW_DIR / REVIEW_BOOK
-    if path.exists() and not force:
-        raise ReferenceError(f"{path} exists and may hold review decisions; use --force")
+    if path.exists():
+        if not force:
+            raise ReferenceError(f"{path} exists and may hold review decisions; use --force")
+        started = _existing_decisions(path)
+        if started and not discard_decisions:
+            amount = started if started > 0 else "some"
+            raise ReferenceError(
+                f"the existing workbook holds reviewer input in {amount} row(s); rebuilding "
+                "would discard it (add --discard-decisions to do so)"
+            )
     docs = {r["document_id"]: r for r in _rows(ref / "documents.csv")}
     if any(not d.get("split") for d in docs.values()):
         raise ReferenceError("freeze the split first (eval-split) so each sheet holds one split")
     cands = _rows(ref / CANDIDATES)
+    ids = [c["candidate_id"] for c in cands]
+    if len(ids) != len(set(ids)) or not all(ids):
+        raise ReferenceError("candidate ids are missing or not unique")
     wb = Workbook()
     info = wb.active
     info.title = "Instructions"
@@ -457,21 +508,27 @@ def build_review_workbook(ref: Path, settings: Settings, force: bool = False) ->
         "independently (ideally by another reviewer) and only after calibration choices are",
         "frozen; do not tune keywords or rules on it.",
         "",
+        "Columns: BLUE headers = source data (do not edit); GREY = the tool's suggestion",
+        "(a hint only, never used as ground truth); YELLOW = your decisions.",
+        "",
         "For every row:",
         "  decision        accept = this is a real faculty correction with the label below;",
         "                  reject = not a correction (noise, duplicate, student text);",
-        "                  unsure = needs discussion (blocks finalisation).",
-        "  final_label     choose from the list (see the 'labels' sheet). The suggestion is",
-        "                  only a hint and is NOT accepted automatically. Use other_feedback",
+        "                  unclear = needs discussion (blocks finalisation).",
+        "  final_label     choose from the list (see the 'labels' sheet). Use other_feedback",
         "                  for faculty advice that fits no label - it is preserved.",
         "  faculty_intent  correction_required = the faculty says something is wrong/missing;",
-        "                  recommendation = advice/improvement, not a defect; unclear.",
+        "                  recommendation = optional advice/improvement, not a defect; unclear.",
         "  final_severity  high | medium | low (blank = medium).",
         "  reviewer_id     your initials or staff id (required for accepted rows).",
         "",
+        "Sorting and filtering are fine. Do not delete rows or edit candidate_id,",
+        "document_id, page or faculty_correction: finalisation checks them.",
         "Labels marked 'outside scanner scope' have no scanner rule yet: they are kept as",
         "faculty feedback and reported separately, never counted as scanner errors.",
-        "Do not edit any other column. Then run: python -m pps_ats finalize-review <dataset>",
+        "Save as .xlsx (same file name), close Excel, then run:",
+        "  python -m pps_ats review-status <dataset>",
+        "  python -m pps_ats finalize-review <dataset> --split calibration",
     ]
     for n, line in enumerate(lines, 1):
         info.cell(row=n, column=1, value=line)
@@ -488,10 +545,12 @@ def build_review_workbook(ref: Path, settings: Settings, force: bool = False) ->
     n_labels = len(settings.evaluation.labels) + 1
     for split in ("calibration", "evaluation"):
         ws = wb.create_sheet(split)
+        ws.row_dimensions[1].height = 30
         for col, (name, width) in enumerate(REVIEW_COLUMNS, 1):
             cell = ws.cell(row=1, column=col, value=name)
             cell.font = Font(bold=True, color="FFFFFF")
-            cell.fill = PatternFill("solid", fgColor="1F3864" if name not in EDITABLE else "7F6000")
+            cell.fill = PatternFill("solid", fgColor=_HEADER_FILL[_review_fields(name)])
+            cell.alignment = Alignment(wrap_text=True, vertical="center")
             ws.column_dimensions[cell.column_letter].width = width
         rows = [c for c in cands if docs[c["document_id"]]["split"] == split]
         for r, c in enumerate(rows, 2):
@@ -499,7 +558,6 @@ def build_review_workbook(ref: Path, settings: Settings, force: bool = False) ->
             values = {
                 "candidate_id": c["candidate_id"],
                 "document_id": c["document_id"],
-                "page": int(c["page"]) if c["page"].isdigit() else c["page"],
                 "faculty_correction": c.get("teacher_comment", ""),
                 "associated_section": c.get("associated_section", ""),
                 "suggested_label": c.get("suggested_label", ""),
@@ -514,12 +572,20 @@ def build_review_workbook(ref: Path, settings: Settings, force: bool = False) ->
                 "resume_context": c.get("context", ""),
             }
             for col, (name, _) in enumerate(REVIEW_COLUMNS, 1):
-                cell = ws.cell(row=r, column=col, value=_clean_cell(str(values.get(name, ""))))
-                cell.data_type = "s" if name != "page" else cell.data_type
+                if name == "page":
+                    page = c.get("page", "")
+                    cell = ws.cell(row=r, column=col, value=int(page) if page.isdigit() else page)
+                else:
+                    cell = ws.cell(row=r, column=col, value=_clean_cell(str(values.get(name, ""))))
+                    cell.data_type = "s"  # never a formula
+                kind = _review_fields(name)
+                if kind in _CELL_FILL:
+                    cell.fill = PatternFill("solid", fgColor=_CELL_FILL[kind])
+                if kind == "hint":
+                    cell.font = Font(italic=True, color="595959")
                 cell.alignment = Alignment(wrap_text=True, vertical="top")
         last = max(2, len(rows) + 1)
         cols = {name: col for col, (name, _) in enumerate(REVIEW_COLUMNS, 1)}
-
         for name, formula in (
             ("decision", '"' + ",".join(DECISIONS) + '"'),
             ("faculty_intent", '"' + ",".join(INTENTS) + '"'),
@@ -527,7 +593,19 @@ def build_review_workbook(ref: Path, settings: Settings, force: bool = False) ->
             ("final_label", f"labels!$A$2:$A${n_labels}"),
         ):
             letter = ws.cell(row=1, column=cols[name]).column_letter
-            dv = DataValidation(type="list", formula1=formula, allow_blank=True)
+            title, prompt = _PROMPTS[name]
+            dv = DataValidation(
+                type="list",
+                formula1=formula,
+                allow_blank=True,
+                showErrorMessage=True,
+                errorStyle="stop",
+                errorTitle="Not an allowed value",
+                error="Pick a value from the drop-down list.",
+                showInputMessage=True,
+                promptTitle=title,
+                prompt=prompt,
+            )
             dv.add(f"{letter}2:{letter}{last}")
             ws.add_data_validation(dv)
         ws.freeze_panes = "D2"
@@ -540,17 +618,21 @@ def build_review_workbook(ref: Path, settings: Settings, force: bool = False) ->
 
 
 def read_review(ref: Path) -> list[dict[str, str]]:
+    """All review rows (both sheets). A row whose candidate_id was cleared but which holds
+    reviewer input is returned with ``candidate_id = ''`` so it is reported, not lost."""
     wb = load_workbook(Path(ref) / REVIEW_DIR / REVIEW_BOOK, read_only=True, data_only=True)
     out = []
     for split in ("calibration", "evaluation"):
         rows = list(wb[split].iter_rows(values_only=True))
         header = [str(h) for h in rows[0]]
         for r in rows[1:]:
-            if not r or r[0] is None:
+            if not r or all(v is None or str(v).strip() == "" for v in r):
                 continue
             item = {
                 h: ("" if v is None else str(v).strip()) for h, v in zip(header, r, strict=False)
             }
+            if item.get("page", "").endswith(".0"):
+                item["page"] = item["page"][:-2]  # a page number re-typed as 1.0
             item["split"] = split
             out.append(item)
     wb.close()
@@ -559,67 +641,125 @@ def read_review(ref: Path) -> list[dict[str, str]]:
 
 @dataclass
 class ReviewStatus:
-    by_split: dict[str, dict[str, int]] = field(default_factory=dict)
+    by_split: dict[str, dict] = field(default_factory=dict)
     invalid: list[str] = field(default_factory=list)  # candidate ids + reason (no text)
 
 
 def _row_problem(row: dict[str, str], labels: set[str]) -> str | None:
-    decision = row.get("decision", "").lower()
+    decision = _decision(row.get("decision", ""))
     if decision not in ("", *DECISIONS):
-        return f"decision {decision!r} is not accept/reject/unsure"
+        return f"decision {decision!r} is not accept/reject/unclear"
     if decision != "accept":
         return None
-    if row.get("final_label", "").lower() not in labels:
+    if row.get("final_label", "").strip().lower() not in labels:
         return "accepted without a valid final_label"
-    if row.get("faculty_intent", "").lower() not in INTENTS:
+    if row.get("faculty_intent", "").strip().lower() not in INTENTS:
         return "accepted without faculty_intent"
-    if row.get("final_severity", "").lower() not in ("", *SEVERITIES):
+    if row.get("final_severity", "").strip().lower() not in ("", *SEVERITIES):
         return "final_severity is not high/medium/low"
     if not row.get("reviewer_id"):
         return "accepted without reviewer_id"
     return None
 
 
-def review_status(ref: Path, settings: Settings) -> ReviewStatus:
+def _check_split(
+    ref: Path, settings: Settings, split: str, rows: list[dict[str, str]]
+) -> tuple[dict, list[str]]:
+    """Counts and problems for one split, comparing the sheet with the candidate list."""
     labels = set(settings.evaluation.labels)
-    status = ReviewStatus()
-    for row in read_review(ref):
-        decision = row.get("decision", "").lower()
-        key = {"accept": "confirmed", "reject": "rejected", "unsure": "uncertain"}.get(
-            decision, "unreviewed" if not decision else "invalid"
-        )
+    docs = {d["document_id"]: d for d in _rows(ref / "documents.csv")}
+    expected = {
+        c["candidate_id"]: c
+        for c in _rows(ref / CANDIDATES)
+        if docs[c["document_id"]]["split"] == split
+    }
+    counts = {"total": len(expected), "confirmed": 0, "rejected": 0, "unclear": 0,
+              "unreviewed": 0, "invalid": 0, "missing": 0}  # fmt: skip
+    problems: list[str] = []
+    seen: dict[str, int] = {}
+    for row in rows:
+        cid = row.get("candidate_id", "")
+        if not cid:
+            problems.append("a row has no candidate_id (was it edited?)")
+            counts["invalid"] += 1
+            continue
+        seen[cid] = seen.get(cid, 0) + 1
+        if cid not in expected:
+            problems.append(f"{cid}: not a candidate of the {split} split")
+            counts["invalid"] += 1
+            continue
+        if seen[cid] > 1:
+            problems.append(f"{cid}: appears more than once")
+            counts["invalid"] += 1
+            continue
+        source = expected[cid]
+        original = {
+            "document_id": source["document_id"],
+            "page": source.get("page", ""),
+            "faculty_correction": _clean_cell(source.get("teacher_comment", "")).strip(),
+        }
+        edited = [
+            k
+            for k in _LOCKED_CHECK
+            if " ".join(row.get(k, "").split()) != " ".join(original[k].split())
+        ]  # whitespace-insensitive: Excel may rewrite line breaks
+        if edited:
+            problems.append(f"{cid}: source column(s) edited: {', '.join(edited)}")
+            counts["invalid"] += 1
+            continue
         problem = _row_problem(row, labels)
         if problem:
-            key = "invalid"
-            status.invalid.append(f"{row['candidate_id']}: {problem}")
-        split = status.by_split.setdefault(
-            row["split"],
-            {"confirmed": 0, "rejected": 0, "uncertain": 0, "unreviewed": 0, "invalid": 0},
+            problems.append(f"{cid}: {problem}")
+            counts["invalid"] += 1
+            continue
+        decision = _decision(row.get("decision", ""))
+        key = {"accept": "confirmed", "reject": "rejected", "unclear": "unclear"}.get(
+            decision, "unreviewed"
         )
-        split[key] += 1
+        counts[key] += 1
+    missing = sorted(set(expected) - set(seen))
+    counts["missing"] = len(missing)
+    problems += [f"{cid}: row missing from the workbook" for cid in missing[:20]]
+    counts["remaining"] = (
+        counts["unreviewed"] + counts["unclear"] + counts["invalid"] + counts["missing"]
+    )
+    counts["ready_to_finalize"] = counts["remaining"] == 0
+    return counts, problems
+
+
+def review_status(ref: Path, settings: Settings) -> ReviewStatus:
+    ref = Path(ref)
+    rows = read_review(ref)
+    status = ReviewStatus()
+    state_path = ref / REVIEW_STATE
+    state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else {}
+    for split in ("calibration", "evaluation"):
+        counts, problems = _check_split(
+            ref, settings, split, [r for r in rows if r["split"] == split]
+        )
+        counts["finalized"] = split in state
+        status.by_split[split] = counts
+        status.invalid += problems
     return status
 
 
 def finalize_review(ref: Path, settings: Settings, split: str) -> dict:
     """Write reference annotations for one split from explicitly accepted rows.
 
-    Refused while any row of that split is unreviewed, uncertain or invalid. Annotations
-    already finalised for the other split are kept unchanged."""
+    Refused while any row of that split is unreviewed, unclear, invalid, duplicated,
+    edited or missing. Annotations already finalised for the other split are kept."""
     ref = Path(ref)
-    labels = set(settings.evaluation.labels)
     rows = [r for r in read_review(ref) if r["split"] == split]
-    problems = []
-    for r in rows:
-        decision = r.get("decision", "").lower()
-        if decision in ("", "unsure"):
-            problems.append(f"{r['candidate_id']}: {'unreviewed' if not decision else 'unsure'}")
-        elif (p := _row_problem(r, labels)) is not None:
-            problems.append(f"{r['candidate_id']}: {p}")
-    if problems:
+    counts, problems = _check_split(ref, settings, split, rows)
+    if not counts["ready_to_finalize"]:
+        pending = [p for p in problems] + [
+            f"{counts['unreviewed']} unreviewed",
+            f"{counts['unclear']} unclear",
+        ]
         raise ReferenceError(
-            f"{len(problems)} {split} row(s) not ready: "
-            + "; ".join(problems[:8])
-            + (" ..." if len(problems) > 8 else "")
+            f"{counts['remaining']} of {counts['total']} {split} row(s) not ready: "
+            + "; ".join(pending[:10])
+            + (" ..." if len(pending) > 10 else "")
         )
     docs = {d["document_id"]: d for d in _rows(ref / "documents.csv")}
     cands = {c["candidate_id"]: c for c in _rows(ref / CANDIDATES)}
@@ -627,22 +767,22 @@ def finalize_review(ref: Path, settings: Settings, split: str) -> dict:
     keep = [a for a in existing if docs[a["document_id"]]["split"] != split]
     new = []
     for r in rows:
-        if r["decision"].lower() != "accept":
+        if _decision(r["decision"]) != "accept":
             continue
         c = cands[r["candidate_id"]]
         comment = " | ".join(x for x in (c.get("teacher_comment"), r.get("reviewer_notes")) if x)
         new.append(
             {
                 "document_id": r["document_id"],
-                "label": r["final_label"].lower(),
-                "severity": (r.get("final_severity") or "medium").lower(),
+                "label": r["final_label"].strip().lower(),
+                "severity": (r.get("final_severity") or "medium").strip().lower(),
                 "text": c.get("quoted_text", ""),
                 "page": c.get("page", ""),
                 "criterion": "",
                 "source": "faculty",
                 "annotator_id": c.get("author", ""),
                 "comment": comment,
-                "intent": r["faculty_intent"].lower(),
+                "intent": r["faculty_intent"].strip().lower(),
                 "reviewer_id": r["reviewer_id"],
             }
         )
@@ -654,12 +794,35 @@ def finalize_review(ref: Path, settings: Settings, split: str) -> dict:
         "rows": len(rows),
         "accepted": len(new),
         "rejected": len(rows) - len(new),
+        "recommendations": sum(1 for a in new if a["intent"] == "recommendation"),
         "reviewers": sorted({r["reviewer_id"] for r in rows if r.get("reviewer_id")}),
         "review_book_sha256": sha256(ref / REVIEW_DIR / REVIEW_BOOK),
     }
     state["annotations_sha256"] = sha256(ref / "annotations.csv")
     state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
     return state[split]
+
+
+def calibration_gate(ref: Path) -> list[str]:
+    """Reasons a calibration comparison may not run yet on a gated reference."""
+    ref = Path(ref)
+    manifest_path = ref / MANIFEST
+    if not manifest_path.is_file() or not json.loads(manifest_path.read_text(encoding="utf-8")).get(
+        "gated"
+    ):
+        return []
+    state_path = ref / REVIEW_STATE
+    state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else {}
+    if "calibration" not in state:
+        return ["the calibration review is not finalised (finalize-review --split calibration)"]
+    if state.get("annotations_sha256") != sha256(ref / "annotations.csv"):
+        return ["annotations.csv changed after finalisation"]
+    return []
+
+
+def is_gated(ref: Path) -> bool:
+    path = Path(ref) / MANIFEST
+    return path.is_file() and bool(json.loads(path.read_text(encoding="utf-8")).get("gated"))
 
 
 # ---------------------------------------------------------------- calibration freeze + gate

@@ -208,12 +208,16 @@ def run_evaluation(
     variant: str = "A",
     evaluator: ContextualEvaluator | None = None,
 ) -> EvaluationReport:
-    if split == "evaluation":
-        from pps_ats.evaluation.reference import held_out_gate
+    from pps_ats.evaluation.reference import calibration_gate, held_out_gate
 
+    if split == "evaluation":
         blocked = held_out_gate(dataset.root, settings)
         if blocked:
             raise ValueError("held-out evaluation is not allowed yet: " + "; ".join(blocked))
+    else:
+        blocked = calibration_gate(dataset.root)
+        if blocked:
+            raise ValueError("calibration comparison is not allowed yet: " + "; ".join(blocked))
     report = evaluate(dataset, settings, split, variant, evaluator)
     write_report(report, output)
     return report

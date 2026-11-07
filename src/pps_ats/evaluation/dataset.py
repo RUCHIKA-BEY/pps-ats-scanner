@@ -160,6 +160,13 @@ def load_dataset(
         rel = row.get("file", "")
         if not rel:
             raise DatasetError(f"{doc_id}: file is empty")
+        input_status = row.get("scanner_input_status", "")
+        if input_status and input_status != "clean":
+            warnings.append(
+                f"{doc_id}: scanner input status {input_status!r} (faculty text not cleanly "
+                "separated); excluded until reviewed"
+            )
+            continue
         documents[doc_id] = ReferenceDocument(
             document_id=doc_id,
             file=rel,

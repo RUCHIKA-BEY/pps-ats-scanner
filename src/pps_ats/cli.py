@@ -201,6 +201,12 @@ def _build_parser() -> argparse.ArgumentParser:
     imp.add_argument("intake", type=Path, help="folder with originals/, corrected/, marks.csv")
     imp.add_argument("-o", "--output", type=Path, required=True, help="dataset folder (private)")
     imp.add_argument("--force", action="store_true", help="re-import (old files kept as .bak)")
+    imp.add_argument(
+        "--corrected-only",
+        action="store_true",
+        help="no separate originals: INTAKE holds faculty-corrected PDFs (optionally in "
+        "corrected/); faculty text is separated from student content",
+    )
     imp.add_argument("--allow-synced-output", action="store_true")
 
     fin = sub.add_parser(
@@ -404,6 +410,22 @@ def _run_import(args: argparse.Namespace, settings) -> int:  # type: ignore[no-u
     if problem:
         print(f"error: {problem}", file=sys.stderr)
         return 2
+    if args.corrected_only:
+        from pps_ats.evaluation.corrected_only import import_corrected_only
+
+        try:
+            c = import_corrected_only(args.intake, args.output, settings, force=args.force)
+        except (ImportError_, OSError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        print(
+            f"corrected-only: {c.documents} document(s), scanner input {c.by_status}; "
+            f"{c.candidates} candidate(s), {c.auto_mapped} auto-mapped, {c.needs_review} need "
+            f"review; faculty marks imported {c.marks_imported}; problems {len(c.problems)} "
+            f"-> {args.output / 'import_report.md'}",
+            file=sys.stderr,
+        )
+        return 0
     try:
         s = import_corrections(args.intake, args.output, settings, force=args.force)
     except (ImportError_, OSError) as exc:

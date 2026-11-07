@@ -291,6 +291,7 @@ class CorrectionImportSettings(BaseModel):
     low_severity_words: list[str] = Field(default_factory=list)
     corrected_suffixes: list[str] = Field(default_factory=list)
     keywords: dict[str, list[str]] = Field(default_factory=dict)
+    patterns: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class EvaluationSettings(BaseModel):

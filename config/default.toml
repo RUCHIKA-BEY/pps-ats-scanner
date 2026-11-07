@@ -572,6 +572,9 @@ certification_details = ["CQ_CERTIFICATION_DETAILS"]
 duplicate_content = ["CQ_REPEATED_LINE", "CQ_NEAR_DUPLICATE_LINE"]
 identity = ["IDENTITY_*"]
 uncertain_structure = ["SEC_UNCERTAIN", "FMT_GARBLED_TEXT"]
+# Faculty labels with no scanner rule yet: always counted as missed, never as detected.
+section_title = []               # "title as skills", "rename section to ..."
+section_order = []               # "mention before skills", "move ... above ..."
 
 # AI assistance is recommended for a pilot only if ALL of these hold on the held-out split.
 [evaluation.ai_adoption]
@@ -609,7 +612,21 @@ layout = ["layout", "column", "table", "text box", "header", "footer", "photo"]
 career_objective = ["objective", "summary", "career goal", "profile statement"]
 project_description = ["project", "description", "contribution", "tech stack", "technologies used"]
 weak_language = ["weak", "vague", "generic", "passive", "action verb", "informal", "tone", "casual", "filler"]
-education_details = ["education", "cgpa", "gpa", "percentage", "degree", "year of passing"]
+education_details = ["education", "cgpa", "gpa", "percentage", "degree", "year of passing",
+                     "10th", "12th", "ssc", "hsc"]
 certification_details = ["certification", "certificate"]
 duplicate_content = ["duplicate", "repeated", "repetition", "redundant"]
 identity = ["name mismatch", "wrong name", "not your resume", "someone else"]
+
+# Instruction patterns (regular expressions on the lower-cased comment) for corrected-only
+# intake. They are tried before the keywords; one matching label => suggested,
+# several => needs_review. Tuned on the example instructions supplied with the request,
+# not on the faculty files themselves.
+[evaluation.import.patterns]
+section_title = ['^(title|retitle|rename)\b', '\btitle (it |this )?as\b', '\brename (the )?(section|heading)\b', '\bheading (should be|as)\b']
+section_order = ['\b(before|after|above|below)\s+(the\s+)?(skills|education|projects?|experience|internships?|summary|objective|certifications?|achievements|participation)\b', '^move\b', '\border of (the )?sections\b']
+missing_section = ['^(pl(ease|z)\s+)?add (a |an |the )?(career objective|objective|summary|profile|skills|projects?|experience|internships?|certifications?|achievements|hobbies|declaration|languages)\b']
+education_details = ['\b(10th|12th|ssc|hsc|class (x|xii|10|12)|cgpa|sgpa|percentage|year of passing)\b']
+weak_language = ['action[- ]oriented', '\baction verbs?\b', '\bconcise\b', '\bpassive\b']
+project_description = ['\bindividual contribution\b', '\byour contribution\b', '\btech(nology)? stack\b', '\bproject description\b']
+career_objective = ['\bobjective (is|should|needs|must)\b', '\bgeneric objective\b']

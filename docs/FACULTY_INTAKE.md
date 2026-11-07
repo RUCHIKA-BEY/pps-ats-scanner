@@ -96,3 +96,52 @@ in the evaluation split are needed before any AI comparison (`benchmark-ai`).
   (`.gitignore` also excludes `*.pdf`, `*.docx`, `*.csv`, `*.xlsx`).
 * The importer copies files; it never modifies or deletes anything in INTAKE.
 * Nothing is sent to any external service.
+
+## 5. Corrected-only intake (no separate originals)
+
+Use when faculty returned annotated PDFs and the students' originals are not available.
+
+```
+D:\pps_private\corrected_only\
+  intake\                      the faculty-corrected PDFs (flat, or in intake\corrected\)
+    <document_id>.pdf          e.g. PPS2026-0001.pdf (suffixes like _corrected are stripped)
+  marks.csv                    optional, same format as above; leave out if none exist
+```
+
+```powershell
+python -m pps_ats import-corrections "D:\pps_private\corrected_only\intake" -o "D:\pps_private\corrected_only\dataset" --corrected-only
+```
+
+What it does (the corrected PDF is never written to):
+
+| found in the PDF | treated as | scanner input |
+|---|---|---|
+| annotation objects (FreeText, sticky notes, markup, shapes) | faculty corrections (one annotation = one correction) | annotation objects deleted from the copy |
+| red text in the page content that reads as a section heading in the resume font | the student's own styling | kept |
+| red text in the page content with instruction wording, not overlapping other text | likely faculty (flattened) | glyphs removed by text redaction; document set to `needs_review` until confirmed |
+| other red text, or red text drawn over student text | ambiguous | document `needs_review`, excluded from evaluation |
+| page without a text layer | handwritten/scanned | `manual_transcription`, excluded |
+
+Every copy is verified: no annotation objects left, no faculty red text extractable, and
+the student's non-red characters identical page by page. `documents.csv` gets a
+`scanner_input_status` column; only `clean` documents are evaluated.
+
+Review CSV columns added in this mode: `source_type`, `faculty_likelihood`,
+`associated_section`, `section_basis`. Labels come from `[evaluation.import.patterns]`
+(instruction phrasing) then `[evaluation.import.keywords]`; `section_title` and
+`section_order` are faculty-only labels with no scanner rule yet (always reported as
+missed). Without marks.csv all score fields stay empty and the evaluation reports issue
+agreement only (no grading accuracy).
+
+### 5-document pilot
+
+```powershell
+python -m pps_ats import-corrections "D:\pps_private\corrected_only\intake_pilot5" -o "D:\pps_private\corrected_only\pilot5" --corrected-only
+# review pilot5\annotation_candidates.csv (reviewer_decision, final_label, reviewer_note)
+python -m pps_ats finalize-annotations "D:\pps_private\corrected_only\pilot5"
+python -m pps_ats eval-split "D:\pps_private\corrected_only\pilot5" --eval-fraction 1.0
+python -m pps_ats evaluate "D:\pps_private\corrected_only\pilot5" -o "D:\pps_private\corrected_only\pilot5_eval"
+```
+
+With 5 documents this checks the workflow, not accuracy. For the full set, freeze a real
+split (e.g. `--eval-fraction 0.4`) and tune keyword/pattern lists only on calibration rows.

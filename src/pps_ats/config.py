@@ -284,6 +284,15 @@ class FineTuningSettings(BaseModel):
     min_evaluation_documents: int = 100
 
 
+class CorrectionImportSettings(BaseModel):
+    red_min: float = 0.6
+    red_max_other: float = 0.35
+    high_severity_words: list[str] = Field(default_factory=list)
+    low_severity_words: list[str] = Field(default_factory=list)
+    corrected_suffixes: list[str] = Field(default_factory=list)
+    keywords: dict[str, list[str]] = Field(default_factory=dict)
+
+
 class EvaluationSettings(BaseModel):
     text_match_threshold: float = 0.5
     high_severity_levels: list[str] = Field(default_factory=lambda: ["high"])
@@ -293,6 +302,11 @@ class EvaluationSettings(BaseModel):
     labels: dict[str, list[str]] = Field(default_factory=dict)
     ai_adoption: AIAdoptionSettings = Field(default_factory=AIAdoptionSettings)
     fine_tuning: FineTuningSettings = Field(default_factory=FineTuningSettings)
+    import_: CorrectionImportSettings = Field(
+        default_factory=CorrectionImportSettings, alias="import"
+    )
+
+    model_config = {"populate_by_name": True}
 
 
 class Settings(BaseModel):

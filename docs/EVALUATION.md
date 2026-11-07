@@ -2,6 +2,8 @@
 
 ## Reference dataset
 
+To build one from teacher-corrected PDFs, see [FACULTY_INTAKE.md](FACULTY_INTAKE.md).
+
 ```
 DATASET/
   documents.csv      one row per resume (required)

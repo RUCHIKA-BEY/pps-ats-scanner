@@ -7,6 +7,8 @@ python -m pps_ats score FILE [--output score.json] [--audit-log audit/ca1.jsonl]
 python -m pps_ats review score.json --reviewer F01 --reason "..." --override content_relevance=7
 python -m pps_ats annotate FILE --output annotated.pdf
 python -m pps_ats batch INPUT_DIR --output PRIVATE_OUTPUT_DIR [--manifest m.csv] [--timeout 120]
+python -m pps_ats import-corrections INTAKE --output DATASET
+python -m pps_ats finalize-annotations DATASET
 python -m pps_ats eval-split DATASET
 python -m pps_ats evaluate DATASET --output PRIVATE_REPORT_DIR [--variant A|B]
 python -m pps_ats benchmark-ai DATASET --output PRIVATE_REPORT_DIR
@@ -193,6 +195,23 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "ai-check", help="check the AI provider policy and test it on a FICTIONAL resume"
     )
+    imp = sub.add_parser(
+        "import-corrections", help="teacher-corrected PDFs -> reference dataset draft + review CSV"
+    )
+    imp.add_argument("intake", type=Path, help="folder with originals/, corrected/, marks.csv")
+    imp.add_argument("-o", "--output", type=Path, required=True, help="dataset folder (private)")
+    imp.add_argument("--force", action="store_true", help="re-import (old files kept as .bak)")
+    imp.add_argument("--allow-synced-output", action="store_true")
+
+    fin = sub.add_parser(
+        "finalize-annotations", help="write annotations.csv from the reviewed candidates"
+    )
+    fin.add_argument("dataset", type=Path)
+    fin.add_argument(
+        "--allow-unresolved",
+        action="store_true",
+        help="leave out rows still awaiting a decision (they are counted, not guessed)",
+    )
     return parser
 
 
@@ -378,6 +397,53 @@ def _run_evaluate(args: argparse.Namespace, settings) -> int:  # type: ignore[no
     return 0
 
 
+def _run_import(args: argparse.Namespace, settings) -> int:  # type: ignore[no-untyped-def]
+    from pps_ats.evaluation.importer import ImportError_, import_corrections
+
+    problem = _private_output(args.output, args.allow_synced_output, settings)
+    if problem:
+        print(f"error: {problem}", file=sys.stderr)
+        return 2
+    try:
+        s = import_corrections(args.intake, args.output, settings, force=args.force)
+    except (ImportError_, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(
+        f"imported {s.documents} document(s) ({s.with_corrections} with corrections): "
+        f"{s.candidates} candidate(s), {s.auto_mapped} auto-mapped, {s.needs_review} need "
+        f"review; faculty marks imported {s.marks_imported}, rejected {len(s.marks_rejected)}; "
+        f"problems {len(s.problems)} -> {args.output / 'import_report.md'}",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def _run_finalize(args: argparse.Namespace, settings) -> int:  # type: ignore[no-untyped-def]
+    from pps_ats.evaluation.importer import finalize_annotations
+
+    try:
+        s = finalize_annotations(args.dataset, settings, args.allow_unresolved)
+    except (OSError, KeyError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    for problem in s.invalid:
+        print(f"invalid: {problem}", file=sys.stderr)
+    if s.invalid or (s.unresolved and not args.allow_unresolved):
+        print(
+            f"not written: {len(s.unresolved)} row(s) await a reviewer_decision, "
+            f"{len(s.invalid)} invalid row(s)",
+            file=sys.stderr,
+        )
+        return 1
+    print(
+        f"annotations.csv: {s.written} accepted, {s.rejected} rejected, "
+        f"{len(s.unresolved)} left out (undecided)",
+        file=sys.stderr,
+    )
+    return 0
+
+
 def _run_eval_split(args: argparse.Namespace) -> int:
     from pps_ats.evaluation.dataset import DatasetError, freeze_split
 
@@ -494,6 +560,10 @@ def main(argv: list[str] | None = None) -> int:
             return _run_eval_split(args)
         if args.command == "ai-check":
             return _run_ai_check(settings)
+        if args.command == "import-corrections":
+            return _run_import(args, settings)
+        if args.command == "finalize-annotations":
+            return _run_finalize(args, settings)
         result = scan_file(args.file, settings)
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)

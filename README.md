@@ -23,6 +23,8 @@ ATS analysis, faculty rubric scoring and reporting engine.
 * **Milestone 5** — per-document timeout with supervised workers, evaluation against
   faculty-corrected references ([docs/EVALUATION.md](docs/EVALUATION.md)), optional
   evidence-checked AI assistance, disabled by default ([docs/AI.md](docs/AI.md)).
+* **Faculty intake** — import teacher-corrected PDFs into the reference format
+  ([docs/FACULTY_INTAKE.md](docs/FACULTY_INTAKE.md)); tested on synthetic files only.
 
 Migrated from `pps-platform/backend` (feature/ats-engine); this repository is now the
 standalone home of the scanner.

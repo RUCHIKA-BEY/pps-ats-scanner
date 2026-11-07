@@ -585,3 +585,31 @@ require_ci_excludes_zero = true    # 95% paired-bootstrap CI of the total-MAE ch
 [evaluation.fine_tuning]
 min_paired_documents = 500         # faculty-marked + fully annotated, calibration split
 min_evaluation_documents = 100     # held-out, never used for tuning
+
+# ---------------------------------------------------------------- import of teacher corrections
+# Used only by `import-corrections` to SUGGEST a canonical label for a teacher comment.
+# One matching label => suggested (still reviewable); several or none => needs_review.
+[evaluation.import]
+red_min = 0.6                     # a span/drawing is "red" if R >= red_min ...
+red_max_other = 0.35              # ... and G, B <= red_max_other
+high_severity_words = ["must", "major", "critical", "serious", "incorrect", "wrong", "missing"]
+low_severity_words = ["minor", "optional", "consider", "could", "suggest", "maybe"]
+corrected_suffixes = ["_corrected", "-corrected", "_reviewed", "-reviewed", "_annotated",
+                      "-annotated", "_checked", "-checked", " (corrected)"]
+
+[evaluation.import.keywords]
+spelling = ["spelling", "spell", "typo", "misspel"]
+grammar = ["grammar", "tense", "punctuation", "article", "sentence structure", "subject-verb"]
+placeholder = ["placeholder", "template", "lorem", "your name", "fill in", "dummy", "sample text"]
+missing_section = ["missing section", "add section", "add a section", "section missing", "no section"]
+empty_section = ["empty section", "section is empty", "blank section", "nothing under"]
+contact = ["contact", "email", "e-mail", "phone", "mobile", "linkedin", "github"]
+formatting = ["format", "font", "alignment", "align", "spacing", "margin", "bold", "indent", "bullet"]
+layout = ["layout", "column", "table", "text box", "header", "footer", "photo"]
+career_objective = ["objective", "summary", "career goal", "profile statement"]
+project_description = ["project", "description", "contribution", "tech stack", "technologies used"]
+weak_language = ["weak", "vague", "generic", "passive", "action verb", "informal", "tone", "casual", "filler"]
+education_details = ["education", "cgpa", "gpa", "percentage", "degree", "year of passing"]
+certification_details = ["certification", "certificate"]
+duplicate_content = ["duplicate", "repeated", "repetition", "redundant"]
+identity = ["name mismatch", "wrong name", "not your resume", "someone else"]

@@ -22,3 +22,52 @@ checkpoints/
 
 .DS_Store
 Thumbs.db
+
+# --- Added during migration from pps-platform/backend (Milestones 1-2) ---
+# Additional virtual environments / build artefacts
+.venv*/
+venv/
+env/
+*.egg-info/
+build/
+dist/
+
+# Secrets / private configuration
+config/local.toml
+config/*.local.toml
+*.key
+*.pem
+*.p12
+*.pfx
+credentials*.json
+service-account*.json
+secrets/
+
+# Student documents and datasets (never commit). Force-add a public sample deliberately
+# with `git add -f` if ever needed.
+*.pdf
+*.docx
+*.doc
+*.odt
+*.rtf
+submissions/
+uploads/
+samples/
+datasets/
+manifests/
+*.manifest.*
+
+# Generated outputs
+results/
+*.xlsx
+*.csv
+*.result.json
+*.analysis.json
+*.score.json
+audit/
+
+# Model weights
+models/
+*.bin
+*.onnx
+*.ckpt

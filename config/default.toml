@@ -1,0 +1,510 @@
+# PPS ATS — default configuration (Milestone 1: validation + parsing; Milestone 2: analysis).
+# Copy to config/local.toml (git-ignored) and pass with --config, or set PPS_ATS_CONFIG,
+# to override values. Unspecified keys fall back to the values below.
+
+[limits]
+max_file_size_mb = 25
+max_docx_uncompressed_mb = 200   # zip-bomb guard
+max_pages = 30                   # pages beyond this are not parsed
+
+[text]
+min_text_chars = 30              # below this (non-whitespace chars) => no usable text
+low_text_chars = 300             # below this => manual review (too little content)
+low_word_count = 60
+garbled_ratio = 0.10             # share of replacement/private-use/control chars => garbled
+min_alpha_ratio = 0.45           # share of letters among non-space chars
+
+[images]
+image_heavy_ratio = 0.50         # informational only; never invalidates a readable resume
+
+[layout]
+header_band_ratio = 0.07         # top share of page treated as header band
+footer_band_ratio = 0.07
+min_gutter_width_pt = 14         # min empty vertical strip to call a column gutter
+detect_tables = true
+
+[classifier]
+resume_min_score = 4.0           # resume evidence needed for "resume"
+nonresume_min_score = 3.0        # negative evidence needed for "non_resume"
+weak_resume_score = 1.5          # below this, a text-rich doc lacks resume structure
+substantial_words = 100
+max_resume_pages = 4             # more pages => negative signal
+
+# Phrase -> weight. Matched case-insensitively on word boundaries; each phrase counts once.
+[classifier.negative_phrases]
+"grade card" = 2.5
+"gradecard" = 2.5
+"marksheet" = 2.5
+"mark sheet" = 2.5
+"statement of marks" = 2.5
+"statement of grades" = 2.5
+"controller of examinations" = 2.0
+"seat no" = 2.0
+"seat number" = 2.0
+"sgpa" = 1.0
+"credits earned" = 1.5
+"subject code" = 1.5
+"course code" = 1.0
+"grade points" = 1.0
+"result declared" = 1.5
+"this is to certify" = 2.5
+"certificate of completion" = 1.5
+"has successfully completed" = 1.5
+"dear sir" = 1.5
+"dear madam" = 1.5
+"dear hiring manager" = 1.5
+"yours sincerely" = 1.5
+"yours faithfully" = 1.5
+"table of contents" = 2.0
+"bibliography" = 1.0
+"abstract" = 0.5
+"conclusion" = 0.5
+"experiment no" = 2.0
+"aim of the experiment" = 2.0
+"invoice" = 2.0
+
+[sections]
+min_content_chars = 15           # meaningful letters needed for "detected" (else "uncertain")
+max_heading_words = 6
+required = ["contact", "education", "skills", "projects"]
+
+# Regexes; content consisting only of these is treated as an empty section.
+placeholder_patterns = [
+    '\[[^\]]{0,60}\]',
+    '<[^>]{0,60}>',
+    '(?i)lorem ipsum[\w\s,.]*',
+    '(?i)\byour (?:name|email|phone|address|university|college|company)\b',
+    '(?i)\b(?:add|enter|insert|write|describe) (?:your|a|the) [a-z ]{0,30}',
+    '(?i)\b(?:company|job title|position|degree|institution|university) name\b',
+    '(?i)\bmm\s*/\s*yyyy\b',
+    '(?i)\bx{3,}\b',
+    '(?i)\btbd\b',
+    '(?i)\bn/?a\b',
+]
+
+# Canonical section -> heading variants (lower-case, matched after normalisation).
+[sections.canonical]
+summary = ["summary", "professional summary", "career summary", "profile", "professional profile",
+           "objective", "career objective", "about me", "about", "personal statement"]
+education = ["education", "educational qualifications", "educational qualification",
+             "academic qualifications", "academic background", "academic details", "academics",
+             "education details", "qualifications", "education and training"]
+experience = ["experience", "work experience", "professional experience", "employment history",
+              "work history", "internships", "internship", "internship experience",
+              "experience and internships", "industrial experience"]
+projects = ["projects", "project", "academic projects", "personal projects", "project work",
+            "key projects", "project experience", "major projects", "mini projects"]
+skills = ["skills", "technical skills", "key skills", "core skills", "skill set", "skillset",
+          "core competencies", "competencies", "technical proficiency", "soft skills",
+          "skills and abilities", "tools and technologies"]
+certifications = ["certifications", "certification", "certificates", "courses",
+                  "certifications and courses", "licenses and certifications",
+                  "online courses", "trainings", "training", "courses and certifications"]
+achievements = ["achievements", "accomplishments", "awards", "honors", "honours",
+                "awards and achievements", "achievements and awards"]
+activities = ["extracurricular activities", "extra curricular activities",
+              "co curricular activities", "activities", "positions of responsibility",
+              "leadership", "volunteering", "volunteer experience", "clubs and activities"]
+languages = ["languages", "languages known", "language proficiency"]
+interests = ["interests", "hobbies", "hobbies and interests", "areas of interest"]
+contact = ["contact", "contact information", "contact details", "personal details",
+           "personal information"]
+declaration = ["declaration"]
+references = ["references"]
+
+# =============================================================================
+# Milestone 2 — deterministic analysis. Every threshold / list below is configurable.
+# =============================================================================
+[analysis]
+max_findings_per_rule = 25       # cap per rule_id (extra hits are counted in evidence)
+
+# ---- Placeholder detection ---------------------------------------------------------------
+# mode = "anywhere": the pattern may occur inside a line.
+# mode = "standalone": the whole line (ignoring bullets/colons) must match, so legitimate
+#                      uses such as "Project Title: Smart Irrigation" are not flagged.
+[analysis.placeholders]
+min_value_chars = 3
+# "Label:" fields that must carry a value on the same line or the next line.
+value_labels = ["description", "project description", "technologies", "technologies used",
+                "technology used", "tech stack", "tools used", "tools", "role", "my role",
+                "duration", "responsibilities", "key responsibilities", "outcome", "result",
+                "team size", "objective"]
+# Note: "Link" / "GitHub Link" are deliberately absent - in PDFs the URL is often a hidden
+# hyperlink annotation, so a bare "Link" label is not evidence of a missing value.
+
+[[analysis.placeholders.rules]]
+id = "PH_CITY_STATE"
+pattern = '\b(?:City|CITY|Town)\s*,\s*(?:State|STATE|Country|COUNTRY|Province|Region)\b'
+ignore_case = false
+label = "Template location placeholder"
+correction = "Replace 'City, State' with your actual location, or remove the line."
+confidence = 0.95
+
+[[analysis.placeholders.rules]]
+id = "PH_GENERIC_PROFILE_URL"
+pattern = '(?:linkedin\.com/in|github\.com)/(?:your[-_.]?(?:name|profile|username|user|id|handle)|user[-_]?name|profile[-_]?name|first[-_]?name(?:[-_]?last[-_]?name)?|john[-_]?doe|jane[-_]?doe|x{3,}|name|example|abc|xyz)(?![\w-])'
+label = "Generic profile URL from a template"
+correction = "Replace with your own public profile URL, or remove the link if you do not have one."
+confidence = 0.95
+
+[[analysis.placeholders.rules]]
+id = "PH_GENERIC_EMAIL"
+pattern = '(?<![\w.])(?:your[._-]?(?:name|email|mail|id)|first[._-]?name(?:[._-]?last[._-]?name)?|john[._-]?doe|jane[._-]?doe|name|email|abc|xyz|user[._-]?name)@[a-z0-9-]+\.[a-z.]{2,}'
+label = "Generic e-mail address from a template"
+correction = "Replace with your own e-mail address."
+confidence = 0.9
+
+[[analysis.placeholders.rules]]
+id = "PH_GENERIC_PHONE"
+pattern = '(?:\+\d{1,3}[\s-]?)?\(?\b[xX]{3,}[\sxX-]*\b|\b0{3}[\s-]?0{3}[\s-]?0{4}\b|\b123[\s-]?456[\s-]?7890\b'
+label = "Phone number placeholder"
+correction = "Replace with your own phone number."
+confidence = 0.9
+
+[[analysis.placeholders.rules]]
+id = "PH_BRACKETED_INSTRUCTION"
+pattern = '[\[<{]\s*(?:insert|add|enter|type|write|your|describe|project|company|job|degree|university|college|school|date|month|year|city|skill|name|title|description|details|email|phone)[^\]>}]{0,60}[\]>}]'
+label = "Bracketed template instruction"
+correction = "Replace the bracketed template text with your own details, or delete it."
+confidence = 0.95
+
+[[analysis.placeholders.rules]]
+id = "PH_LOREM_IPSUM"
+pattern = '\blorem\s+ipsum(?:\s+dolor\s+sit\s+amet)?\b|\bdolor\s+sit\s+amet\b'
+label = "Lorem ipsum filler text"
+correction = "Replace the filler text with your own content, or delete it."
+confidence = 0.99
+
+[[analysis.placeholders.rules]]
+id = "PH_YOUR_FIELD"
+pattern = '\byour\s+(?:full\s+)?(?:name|e-?mail(?:\s+address)?|phone(?:\s+number)?|address|city|university|college|school|degree|job\s+title|position|skills?|achievements?|objective|summary|website|portfolio)\b'
+label = "Template text addressing the reader ('Your ...')"
+correction = "Replace the template text with your own details."
+confidence = 0.9
+
+[[analysis.placeholders.rules]]
+id = "PH_INSTRUCTION_TEXT"
+pattern = '\b(?:enter|insert|add|write|type|fill\s+in|mention|list|describe|put)\s+(?:in\s+)?(?:your|the\s+(?:name|details|description|title)|a\s+(?:brief|short)\s+(?:description|summary))\b'
+label = "Template instruction left in the document"
+correction = "Replace the instruction with the actual content it asks for, or delete it."
+confidence = 0.9
+
+[[analysis.placeholders.rules]]
+id = "PH_GOES_HERE"
+pattern = '\b(?:description|details|summary|objective|text|content|title|name|skills?|achievements?|responsibilities|information|info)\s+(?:goes\s+|comes\s+)?here\b'
+label = "Template '... here' text"
+correction = "Replace the template text with your own content."
+confidence = 0.95
+
+[[analysis.placeholders.rules]]
+id = "PH_TEMPLATE_LABEL"
+mode = "standalone"
+pattern = '(?:project\s+(?:title|name)|company\s+name|job\s+title|position\s+title|degree\s+name|university\s+name|college\s+name|institution\s+name|institute\s+name|school\s+name|course\s+name|certification\s+name|certificate\s+name|organi[sz]ation\s+name|your\s+name|full\s+name|candidate\s+name|first\s+name\s+last\s+name|role\s+title|award\s+name)'
+label = "Unfilled template field label"
+correction = "Replace the template label with the actual value (for example the real project or company name)."
+confidence = 0.85
+
+[[analysis.placeholders.rules]]
+id = "PH_DATE_TEMPLATE"
+pattern = '\b(?:mm\s*/\s*(?:yy|yyyy)|month\s*,?\s*year|start\s+date|end\s+date|20xx|19xx|yyyy)\b'
+label = "Template date placeholder"
+correction = "Replace with the actual dates (month and year), or remove them."
+confidence = 0.85
+
+[[analysis.placeholders.rules]]
+id = "PH_XXX"
+pattern = '\b[xX]{3,}\b'
+label = "'XXX' placeholder"
+correction = "Replace 'XXX' with the actual value, or remove it."
+confidence = 0.85
+severity = "medium"
+
+[[analysis.placeholders.rules]]
+id = "PH_TBD"
+pattern = '\b(?:TBD|TBA|to\s+be\s+(?:decided|added|updated|filled|announced))\b'
+label = "'TBD' / 'to be added' marker"
+correction = "Fill in the missing information, or remove the entry until it is available."
+finding_class = "potential_issue"
+severity = "medium"
+confidence = 0.7
+
+[[analysis.placeholders.rules]]
+id = "PH_SAMPLE_TEXT"
+pattern = '\b(?:sample|dummy|placeholder)\s+(?:text|content|description|project|company|title)\b'
+label = "Sample / dummy text"
+correction = "Replace the sample text with your own content."
+confidence = 0.85
+
+# ---- Section completeness -----------------------------------------------------------------
+# Absent optional sections are reported in the assessment but never treated as defects.
+[analysis.completeness]
+required = ["contact", "education", "skills", "projects"]
+recommended = ["summary"]
+optional = ["experience", "achievements", "certifications"]
+min_detected_for_definite = 3
+
+# ---- Formatting / ATS layout --------------------------------------------------------------
+[analysis.formatting]
+min_font_share = 0.03            # font families below this share of characters are ignored
+max_font_families = 3            # more distinct (non-icon) families => potential issue
+body_family_min_share = 0.10     # a 2nd body-text family above this share => inconsistency
+max_distinct_sizes = 6
+min_body_font_pt = 8.0           # text smaller than this is hard to read
+very_small_font_pt = 6.5
+min_small_text_chars = 15        # ignore tiny fragments (superscripts, icons)
+line_spacing_tolerance = 0.35    # deviation of a paragraph's leading from the document median
+min_lines_for_spacing = 3
+large_gap_lines = 4.0            # vertical gap > N body line-heights => suspicious whitespace
+trailing_whitespace_ratio = 0.45 # non-final page with this share left empty at the bottom
+max_side_margin_pt = 100.0       # ~1.4 in
+max_top_margin_pt = 120.0
+min_margin_pt = 18.0             # text closer than this to the edge may be cut when printed
+max_left_edge_clusters = 5
+narrow_gutter_pt = 24.0          # side-by-side text closer than this may merge in ATS parsing
+max_columns = 2
+table_min_rows = 3
+large_image_area_ratio = 0.15
+garbled_line_ratio = 0.3
+docx_large_spacing_pt = 36.0
+docx_max_line_spacing_values = 2
+icon_font_patterns = ["symbol", "wingding", "dingbat", "fontawesome", "awesome", "icon",
+                      "material", "emoji", "glyph"]
+
+# ---- Identity -----------------------------------------------------------------------------
+[analysis.identity]
+min_name_token_len = 3
+name_search_lines = 6
+filename_id_pattern = '^(?:\d{5,15}|[a-z]{1,5}\d{4,13})$'
+filename_noise_tokens = ["resume", "resumes", "cv", "curriculum", "vitae", "final", "updated",
+                         "update", "new", "latest", "copy", "ats", "draft", "version", "ver",
+                         "v1", "v2", "v3", "doc", "docx", "pdf", "my", "the", "of", "and",
+                         "ca1", "ca", "pps", "submission", "assignment", "student", "btech",
+                         "sem", "semester", "div", "batch", "roll", "no", "prn", "id",
+                         "software", "engineer", "engineering", "developer", "computer",
+                         "comp", "cse", "entc", "mech", "civil", "intern", "internship",
+                         "sample", "template", "profile", "portfolio", "fy", "sy", "ty",
+                         "be", "me", "mca", "bca", "mba"]
+name_stopwords = ["resume", "curriculum", "vitae", "cv", "profile", "summary", "objective",
+                  "contact", "education", "skills", "page", "university", "institute",
+                  "college", "engineering", "technology", "student", "developer", "engineer"]
+student_id_patterns = [
+    '(?i)\b(?:prn|roll\s*no|roll\s*number|enrol(?:l)?ment\s*(?:no|number)|student\s*id|erp\s*id|sap\s*id|reg(?:istration)?\s*(?:no|number))\.?\s*[:#-]?\s*([A-Z0-9]{5,15})\b',
+]
+
+# ---- Content quality ----------------------------------------------------------------------
+[analysis.content]
+vague_min_words = 12
+objective_min_words = 12
+objective_max_words = 120
+filler_min_hits = 3
+duplicate_min_chars = 25
+near_duplicate_ratio = 0.92
+min_description_chars = 15
+action_verbs = ["developed", "built", "designed", "implemented", "created", "led", "managed",
+                "engineered", "automated", "optimized", "optimised", "analyzed", "analysed",
+                "deployed", "integrated", "researched", "architected", "programmed", "coded",
+                "tested", "debugged", "migrated", "improved", "reduced", "increased",
+                "launched", "configured", "trained", "evaluated", "modelled", "modeled",
+                "wrote", "authored", "presented", "organized", "organised", "coordinated",
+                "conducted", "established", "streamlined", "refactored", "maintained",
+                "collaborated", "mentored", "delivered", "achieved", "won", "secured",
+                "contributed", "prototyped", "visualized", "visualised", "scraped", "fine-tuned"]
+weak_openers = ["worked on", "responsible for", "helped", "helped in", "helped with", "did",
+                "was involved in", "involved in", "handled", "assisted with", "assisted in",
+                "participated in", "tasked with", "duties included", "worked with",
+                "was part of", "in charge of"]
+filler_phrases = ["hardworking", "hard working", "hard-working", "team player", "go-getter",
+                  "think outside the box", "detail-oriented", "detail oriented",
+                  "self-motivated", "self motivated", "result-oriented", "results-oriented",
+                  "result oriented", "highly motivated", "quick learner", "fast learner",
+                  "dynamic", "synergy", "go the extra mile", "passionate",
+                  "challenging position", "challenging environment", "reputed organization",
+                  "reputed organisation", "esteemed organization", "esteemed organisation",
+                  "utilize my skills", "utilise my skills", "best of my knowledge",
+                  "growth of the organization", "growth of the organisation",
+                  "excellent communication skills", "positive attitude", "eager to learn",
+                  "self-starter", "best of my abilities"]
+contribution_markers = ["i ", "my role", "my contribution", "responsible for", "contributed",
+                        "individually", "solely", "personally", "led ", "role:",
+                        "contribution:"]
+technology_markers = ["using", "built with", "developed with", "tech stack", "technologies",
+                      "technology", "tools", "implemented in", "written in", "stack:",
+                      "framework", "library", "api", "database"]
+degree_keywords = ["b.tech", "btech", "b. tech", "b.e.", "bachelor", "master", "m.tech",
+                   "mtech", "mba", "bca", "mca", "b.sc", "bsc", "m.sc", "msc", "b.com",
+                   "bcom", "diploma", "hsc", "ssc", "12th", "10th", "xii", "class x",
+                   "class 12", "class 10", "higher secondary", "secondary school", "cbse",
+                   "icse", "phd", "ph.d", "degree", "junior college", "matriculation",
+                   "intermediate", "puc", "secondary certificate"]
+institution_keywords = ["university", "institute", "college", "school", "vidyalaya",
+                        "academy", "iit", "nit", "iiit", "bits", "polytechnic", "vidyapeeth",
+                        "vidyapith", "mahavidyalaya", "campus"]
+certification_issuers = ["coursera", "udemy", "nptel", "edx", "google", "aws", "amazon",
+                         "microsoft", "cisco", "ibm", "oracle", "infosys", "springboard",
+                         "linkedin", "great learning", "simplilearn", "hackerrank",
+                         "freecodecamp", "meta", "salesforce", "red hat", "kaggle",
+                         "datacamp", "udacity", "swayam", "tcs", "wipro", "accenture",
+                         "deloitte", "nasscom", "comptia", "isc2", "pmi", "github",
+                         "mongodb", "postman", "issued by", "offered by", "provided by",
+                         "certified by"]
+incomplete_endings = ["and", "or", "to", "of", "with", "for", "in", "a", "an", "the", "as",
+                      "by", "on", "at", "my", "which", "that", "where"]
+
+# ---- Spelling and language ----------------------------------------------------------------
+# Local pyspellchecker dictionary + src/pps_ats/resources/tech_terms.txt (+ extra words here).
+[analysis.language]
+enabled = true
+dictionary_language = "en"
+max_findings = 40
+min_word_length = 3
+extra_allowed_words = []
+skip_sections = ["contact"]
+
+# =============================================================================
+# Milestone 3 — PROVISIONAL CA1 rubric scoring and ATS compatibility.
+# These weights are a starting point for faculty calibration, NOT validated marks.
+# They were not fitted to previous Excel marks (those are not treated as ground truth).
+# Change rubric_version whenever any value below changes; it is stored with every score.
+# =============================================================================
+[scoring]
+rubric_version = "CA1-provisional-1"
+rounding = 0.5                   # marks are rounded to this step
+boundary_margin = 0.25           # raw score this close to a band edge => flagged
+scale_by_confidence = true       # deduction x finding confidence
+default_group_cap = 3.0
+
+[scoring.criteria.content_relevance]
+label = "Content & Relevance"
+max_points = 10
+floor = 1
+ceiling = 9
+ceiling_note = "9-10 also requires tailoring to the role and clear goals, which deterministic checks cannot verify; an AI evaluation or faculty review can award the final mark."
+
+[scoring.criteria.structure_formatting]
+label = "Structure & Formatting"
+max_points = 10
+floor = 1
+ceiling = 10
+
+[scoring.criteria.language_professional_tone]
+label = "Language & Professional Tone"
+max_points = 10
+floor = 1
+ceiling = 10
+
+[[scoring.bands]]
+name = "excellent"
+min_score = 9
+
+[[scoring.bands]]
+name = "good"
+min_score = 6
+
+[[scoring.bands]]
+name = "needs_improvement"
+min_score = 0
+
+# Nominal deduction per finding: finding_class -> severity -> marks.
+[scoring.class_points.definite_defect]
+high = 1.5
+medium = 1.0
+low = 0.5
+info = 0.0
+
+[scoring.class_points.potential_issue]
+high = 0.75
+medium = 0.5
+low = 0.25
+info = 0.0
+
+[scoring.class_points.recommendation]
+high = 0.2
+medium = 0.15
+low = 0.1
+info = 0.0
+
+# Maximum deduction per criterion from one group (prevents one problem type dominating).
+[scoring.groups.placeholder]
+max_points = 4.0
+[scoring.groups.section_completeness]
+max_points = 5.0
+[scoring.groups.content_quality]
+max_points = 3.5
+[scoring.groups.formatting]
+max_points = 4.0
+[scoring.groups.layout]
+max_points = 2.0
+[scoring.groups.contact]
+max_points = 2.0
+[scoring.groups.spelling]
+max_points = 2.5
+[scoring.groups.grammar]
+max_points = 1.5
+[scoring.groups.style]
+max_points = 1.5
+
+# Rule-specific settings (points / group / max_count / criterion).
+[scoring.rules.SEC_REQUIRED_MISSING]
+points = 2.0
+[scoring.rules.SEC_CONTACT_MISSING]
+points = 2.0
+# SEC_EMPTY / SEC_PLACEHOLDER_ONLY use the class x severity table: the analysis marks them
+# high for required sections and medium for optional ones.
+[scoring.rules.CQ_PROJECT_NO_DESCRIPTION]
+points = 1.5
+[scoring.rules.CQ_REPEATED_LINE]
+max_count = 3
+[scoring.rules.LANG_SPELLING]
+points = 0.4
+max_count = 8
+[scoring.rules.FMT_MIXED_BODY_FONTS]
+points = 0.75
+max_count = 3                    # one inconsistency, many locations: count it a few times
+[scoring.rules.FMT_SMALL_TEXT]
+max_count = 3
+[scoring.rules.CQ_WEAK_VERB]
+group = "style"
+max_count = 5
+[scoring.rules.CQ_FILLER_PHRASE]
+group = "style"
+max_count = 5
+[scoring.rules.IDENTITY_NAME_NOT_FOUND]
+points = 0.5
+
+# A section-level finding already penalises the line-level findings it summarises.
+[scoring.supersedes]
+SEC_PLACEHOLDER_ONLY = ["PH_*"]
+SEC_EMPTY = ["PH_EMPTY_FIELD"]
+CQ_PROJECT_NO_DESCRIPTION = ["PH_EMPTY_FIELD", "CQ_PROJECT_*"]
+
+# Optional contextual evaluation. Disabled by default: no model is called and nothing
+# leaves the machine. An enabled evaluator can only nudge each criterion by max_adjustment.
+[scoring.ai]
+enabled = false
+max_adjustment = 1.0
+min_confidence = 0.7
+review_disagreement = 1.5
+redact_personal_data = true
+
+# ATS compatibility score (0-100), reported separately from CA1.
+[scoring.ats]
+base = 100
+max_per_rule = 15
+[scoring.ats.severity_points]
+high = 10
+medium = 6
+low = 3
+info = 0
+[scoring.ats.rule_points]
+SEC_CONTACT_MISSING = 20
+CONTACT_EMAIL_MISSING = 10
+CONTACT_PHONE_MISSING = 4
+SEC_REQUIRED_MISSING = 8
+SEC_EMPTY = 3
+SEC_PLACEHOLDER_ONLY = 4
+PH_GENERIC_EMAIL = 10
+PH_GENERIC_PHONE = 6
+IDENTITY_NAME_NOT_FOUND = 5
+[scoring.ats.bands]
+good = 80
+fair = 60

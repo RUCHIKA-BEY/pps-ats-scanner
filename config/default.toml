@@ -378,7 +378,7 @@ generic_tech_markers = ["using", "built with", "developed with", "implemented in
 # specific job are left to the optional contextual AI evaluation).
 objective_target_terms = [
     "intern", "internship", "engineer", "engineering", "developer", "development", "analyst",
-    "analytics", "scientist", "science", "designer", "design", "role", "position", "job",
+    "analytics", "scientist", "science", "designer", "design",
     "consultant", "architect", "administrator", "specialist", "programmer", "researcher",
     "research", "tester", "testing", "manager", "management", "associate", "trainee",
     "software", "data", "web", "cloud", "machine learning", "artificial intelligence", "ai",
@@ -386,7 +386,36 @@ objective_target_terms = [
     "electrical", "finance", "marketing", "hr", "devops", "full stack", "full-stack",
     "backend", "back-end", "frontend", "front-end", "mobile", "android", "ios", "iot",
     "robotics", "automation", "sales", "operations", "product", "ui", "ux", "it ",
-    "computer", "technology", "technical", "teaching", "consulting", "business"]
+    "computer", "teaching", "consulting", "business"]
+# "role", "position", "job", "technology" and "technical" are not a target on their own: stock
+# objectives ("a challenging position ... in technology") use them without naming one.
+# Stock phrases of generic objectives (faculty pilot: 7 of 12 objective corrections say
+# "generic"). Reported (0 marks) only when at least objective_generic_min_hits occur.
+objective_generic_phrases = [
+    "challenging position", "challenging role", "challenging career", "challenging environment",
+    "challenging job", "reputed organization", "reputed organisation", "reputed company",
+    "esteemed organization", "esteemed organisation", "reputable organization",
+    "dynamic organization", "dynamic organisation", "dynamic environment",
+    "growth of the organization", "growth of the organisation", "growth of the company",
+    "utilize my skills", "utilise my skills", "utilize my knowledge", "utilise my knowledge",
+    "enhance my skills", "enhance my knowledge", "learn and grow", "professional growth",
+    "personal growth", "career growth", "opportunity to work", "contribute to the success",
+    "contribute to the growth", "best of my abilities", "work with dedication",
+    "hard working", "hardworking", "result-oriented", "result oriented", "self-motivated",
+    "where i can", "to obtain a position", "to secure a position", "to seek a position"]
+objective_generic_min_hits = 2
+# Role titles (CQ_OBJECTIVE_NO_ROLE, 0 marks): an objective naming only fields of interest.
+objective_role_terms = ["intern", "internship", "engineer", "developer", "analyst",
+    "scientist", "designer", "consultant", "architect", "administrator", "specialist",
+    "programmer", "researcher", "tester", "manager", "associate", "trainee", "technician",
+    "teacher", "lecturer", "fresher", "graduate engineer"]
+# Achievement claims that need a measure (CQ_PROJECT_UNSUPPORTED_CLAIM, 0 marks).
+unsupported_claim_terms = [
+    "improved accuracy", "improved performance", "improved efficiency", "increased efficiency",
+    "increased accuracy", "increased performance", "reduced time", "reduced cost",
+    "highly accurate", "high accuracy", "highly efficient", "significantly", "drastically",
+    "greatly improved", "state-of-the-art", "state of the art", "optimized performance",
+    "optimised performance", "faster than", "better than", "outperform", "outperforms"]
 
 # ---- Contact presentation (faculty pilot) --------------------------------------------------
 [analysis.contact]
@@ -551,6 +580,18 @@ points = 0
 points = 0
 [scoring.rules.CQ_OBJECTIVE_NO_TARGET]
 points = 0
+# Coverage checks added after the scoring study: reported with evidence, 0 CA1 marks until
+# the faculty rubric supports a deduction (Policy A unchanged).
+[scoring.rules.CQ_OBJECTIVE_GENERIC]
+points = 0
+[scoring.rules.CQ_OBJECTIVE_NO_ROLE]
+points = 0
+[scoring.rules.CQ_PROJECT_UNSUPPORTED_CLAIM]
+points = 0
+[scoring.rules.CQ_PROJECTS_THIN]
+points = 0
+[scoring.rules.FMT_MISALIGNED_LINE]
+points = 0
 
 [scoring.supersedes]
 SEC_PLACEHOLDER_ONLY = ["PH_*"]
@@ -561,6 +602,7 @@ CQ_PROJECT_NO_DESCRIPTION = ["PH_EMPTY_FIELD", "CQ_PROJECT_*"]
 # leaves the machine. An enabled evaluator can only nudge each criterion by max_adjustment.
 [scoring.ai]
 enabled = false
+advisory_only = true            # proposals are recorded with evidence, never applied to CA1
 max_adjustment = 1.0
 min_confidence = 0.7
 review_disagreement = 1.5
@@ -645,7 +687,7 @@ grammar = ["LANG_LOWERCASE_I", "LANG_NO_SPACE_AFTER_PUNCT", "LANG_REPEATED_WORD"
 formatting = ["FMT_*"]
 layout = ["LAYOUT_*"]
 career_objective = ["CQ_OBJECTIVE_*", "AI:career_objective"]
-project_description = ["CQ_PROJECT_*", "AI:project_description"]
+project_description = ["CQ_PROJECT_*", "CQ_PROJECTS_THIN", "AI:project_description"]
 weak_language = ["CQ_WEAK_VERB", "CQ_FILLER_PHRASE", "AI:professional_tone"]
 education_details = ["CQ_EDUCATION_INCOMPLETE"]
 certification_details = ["CQ_CERTIFICATION_DETAILS"]

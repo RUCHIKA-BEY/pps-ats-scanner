@@ -237,6 +237,7 @@ def check_projects(ctx: AnalysisContext) -> list[Finding]:
     lines = ctx.section_lines("projects")
     entries = _table_entries(ctx, [t for t in lines if t.block.table_id])
     entries += split_entries([t for t in lines if not t.block.table_id], frozenset(value_labels))
+    entry_words: list[int] = []
     for entry in entries:
         if _key(entry.first) in only_ph:
             continue  # the title itself is template text: reported by the placeholder module
@@ -256,6 +257,7 @@ def check_projects(ctx: AnalysisContext) -> list[Finding]:
         location = locate(entry.first)
         entry_keys = [f"{t.block_id}:l{t.line_index}" for t in entry.lines]
 
+        entry_words.append(len(_words(description)))
         if _letters(description) < cfg.min_description_chars:
             findings.append(
                 make_finding(
@@ -397,6 +399,32 @@ def check_projects(ctx: AnalysisContext) -> list[Finding]:
                     evidence={"word_count": word_count, "outcome_markers": []},
                 )
             )
+        claims = [c for c in cfg.unsupported_claim_terms if _term_in(lowered, c)]
+        if claims and not _OUTCOME_NUMBER_RE.search(full) and not re.search(r"\d\s?%", full):
+            findings.append(
+                make_finding(
+                    rule_id="CQ_PROJECT_UNSUPPORTED_CLAIM",
+                    category=FindingCategory.CONTENT_QUALITY,
+                    finding_class=FindingClass.RECOMMENDATION,
+                    severity=FindingSeverity.LOW,
+                    rubric=CR,
+                    explanation=(
+                        f"The description of '{title}' claims a result ('{claims[0]}') but "
+                        "does not say how much or how it was measured."
+                    ),
+                    correction=(
+                        "If you measured the result, state the measure and how it was "
+                        "obtained; otherwise describe what you built. Do not add figures you "
+                        "cannot support."
+                    ),
+                    method=DetectionMethod.PATTERN,
+                    confidence=0.55,
+                    detected_text=title,
+                    location=location,
+                    section="projects",
+                    evidence={"claim_terms": claims[:5], "measure_found": False},
+                )
+            )
         if word_count < cfg.vague_min_words:
             findings.append(
                 make_finding(
@@ -421,6 +449,37 @@ def check_projects(ctx: AnalysisContext) -> list[Finding]:
                     evidence={"word_count": word_count},
                 )
             )
+    if entry_words and max(entry_words) < cfg.vague_min_words:
+        first = entries[0].first
+        findings.append(
+            make_finding(
+                rule_id="CQ_PROJECTS_THIN",
+                category=FindingCategory.CONTENT_QUALITY,
+                finding_class=FindingClass.POTENTIAL_ISSUE,
+                severity=FindingSeverity.LOW,
+                rubric=CR,
+                explanation=(
+                    f"None of the {len(entry_words)} project(s) has a description of "
+                    f"{cfg.vague_min_words} words or more, so the section lists projects "
+                    "without explaining any of them."
+                ),
+                correction=(
+                    "For at least your main project, explain what it does, how you built it "
+                    "and your own part in it."
+                ),
+                method=DetectionMethod.STRUCTURE,
+                confidence=0.7,
+                detected_text=entries[0].title.strip(),
+                location=locate(first),
+                section="projects",
+                evidence={
+                    "projects": len(entry_words),
+                    "description_words": [str(w) for w in entry_words[:10]],
+                    "min_words": cfg.vague_min_words,
+                    "note": "section-level structure, not resume length",
+                },
+            )
+        )
     return findings
 
 
@@ -748,6 +807,67 @@ def check_objective(ctx: AnalysisContext) -> list[Finding]:
                 evidence={
                     "note": "only the presence of a target is checked; whether the wording "
                     "suits a specific job is left to optional contextual review"
+                },
+            )
+        )
+    fields = [t for t in cfg.objective_target_terms if _term_in(text.casefold(), t)]
+    roles = [
+        r
+        for r in cfg.objective_role_terms
+        if _term_in(text.casefold(), r) or _term_in(text.casefold(), r + "s")
+    ]
+    if fields and cfg.objective_role_terms and not roles:
+        findings.append(
+            make_finding(
+                rule_id="CQ_OBJECTIVE_NO_ROLE",
+                category=FindingCategory.CONTENT_QUALITY,
+                finding_class=FindingClass.RECOMMENDATION,
+                severity=FindingSeverity.LOW,
+                rubric=CR,
+                explanation=(
+                    "The career objective names fields of interest but not the kind of role "
+                    "you are seeking (e.g. intern, developer, analyst)."
+                ),
+                correction=(
+                    "Say which role you are applying for, if you have one in mind (e.g. "
+                    "'a data analyst internship'). Name a company only when applying to it."
+                ),
+                method=DetectionMethod.PATTERN,
+                confidence=0.55,
+                detected_text=text,
+                location=location,
+                section="summary",
+                evidence={"fields_named": fields[:6], "role_terms_found": []},
+            )
+        )
+    padded = " " + text.casefold() + " "
+    generic = [g for g in cfg.objective_generic_phrases if _contains_phrase(padded, g)]
+    if words and len(generic) >= cfg.objective_generic_min_hits:
+        findings.append(
+            make_finding(
+                rule_id="CQ_OBJECTIVE_GENERIC",
+                category=FindingCategory.CONTENT_QUALITY,
+                finding_class=FindingClass.POTENTIAL_ISSUE,
+                severity=FindingSeverity.LOW,
+                rubric=CR,
+                explanation=(
+                    f"The career objective is made of stock phrases ({len(generic)} found) "
+                    "and does not say what you want to do or offer."
+                ),
+                correction=(
+                    "Replace the stock phrases with the role or field you are seeking and one "
+                    "or two strengths you can show elsewhere in the resume."
+                ),
+                method=DetectionMethod.PATTERN,
+                confidence=0.7,
+                detected_text=text,
+                location=location,
+                section="summary",
+                evidence={
+                    "generic_phrases": generic[:6],
+                    "min_hits": cfg.objective_generic_min_hits,
+                    "note": "stock wording only; relevance to a specific job is left to "
+                    "optional contextual review",
                 },
             )
         )

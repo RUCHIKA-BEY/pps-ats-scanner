@@ -108,6 +108,9 @@ class FormattingSettings(BaseModel):
     max_top_margin_pt: float = 120.0
     min_margin_pt: float = 18.0
     max_left_edge_clusters: int = 5
+    misaligned_tolerance_pt: float = 3.0  # lines this close share a left edge
+    misaligned_max_offset_pt: float = 12.0  # larger offsets are deliberate indents
+    misaligned_min_lines: int = 3  # lines that must share the edge a line misses
     narrow_gutter_pt: float = 24.0
     max_columns: int = 2
     table_min_rows: int = 3
@@ -150,6 +153,10 @@ class ContentSettings(BaseModel):
     outcome_min_words: int = 20
     generic_tech_markers: list[str] = Field(default_factory=list)
     objective_target_terms: list[str] = Field(default_factory=list)
+    objective_generic_phrases: list[str] = Field(default_factory=list)
+    objective_generic_min_hits: int = 2
+    objective_role_terms: list[str] = Field(default_factory=list)
+    unsupported_claim_terms: list[str] = Field(default_factory=list)
 
 
 class LanguageSettings(BaseModel):
@@ -211,6 +218,9 @@ class ScoringGroupSettings(BaseModel):
 
 class AIScoringSettings(BaseModel):
     enabled: bool = False
+    # Advisory only (default): proposals and observations are recorded with their confidence
+    # and verified evidence for faculty, but never change a CA1 mark.
+    advisory_only: bool = True
     max_adjustment: float = 1.0  # AI may move a criterion by at most this many marks
     min_confidence: float = 0.7  # below this the AI proposal is recorded but not applied
     review_disagreement: float = 1.5  # |proposal| >= this => manual review

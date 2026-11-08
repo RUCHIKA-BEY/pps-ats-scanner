@@ -95,3 +95,20 @@ No model is trained or bundled in this milestone.
 2. Have two faculty members grade the same sample independently.
 3. Compare per criterion; adjust `[scoring]` values; bump `rubric_version`.
 4. Re-run and record agreement before releasing marks.
+
+## Zero-point coverage checks
+
+Reported with evidence for faculty review, worth 0 CA1 marks until the rubric supports a
+deduction (Policy A marks are unchanged; the scoring config hash changes because the rules
+are listed with `points = 0`):
+
+| rule | what it measures |
+|---|---|
+| `CQ_OBJECTIVE_GENERIC` | ≥ 2 stock phrases (`objective_generic_phrases`) in the objective |
+| `CQ_OBJECTIVE_NO_ROLE` | objective names fields of interest but no role title |
+| `CQ_PROJECTS_THIN` | no project in the section has a description of `vague_min_words` words (section structure, not resume length) |
+| `CQ_PROJECT_UNSUPPORTED_CLAIM` | an achievement claim (`unsupported_claim_terms`) with no measure in the entry |
+| `FMT_MISALIGNED_LINE` | one line in a section starts 3-12 pt off the edge shared by ≥ 3 other lines (geometry; bullets, wrapped lines, centred and right-hand text excluded) |
+
+Margin and alignment findings record the measured value and the threshold
+(`margin_pt`/`threshold_pt`, `left_edge_clusters`/`max_clusters`).

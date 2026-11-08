@@ -576,6 +576,9 @@ def check_alignment(ctx: AnalysisContext) -> list[Finding]:
                     location=locate(example) if example else None,
                     evidence={
                         "left_edges_pt": [str(round(statistics.median(c), 1)) for c in major][:10],
+                        "left_edge_clusters": len(major),
+                        "max_clusters": cfg.max_left_edge_clusters,
+                        "cluster_tolerance_pt": 3.0,
                         "example": "a line from the least used indentation",
                     },
                 )
@@ -590,7 +593,9 @@ def check_margins(ctx: AnalysisContext) -> list[Finding]:
     cfg = ctx.settings.analysis.formatting
     findings: list[Finding] = []
 
-    def finding(rule: str, side: str, value: float, page: int | None, narrow: bool) -> Finding:
+    def finding(
+        rule: str, side: str, value: float, page: int | None, narrow: bool, limit: float
+    ) -> Finding:
         return make_finding(
             rule_id=rule,
             category=FindingCategory.FORMATTING,
@@ -613,7 +618,14 @@ def check_margins(ctx: AnalysisContext) -> list[Finding]:
             location=Location(
                 page, None, LocationPrecision.PAGE if page else LocationPrecision.NONE
             ),
-            evidence={"side": side, "margin_pt": round(value, 1)},
+            evidence={
+                "side": side,
+                "margin_pt": round(value, 1),
+                "threshold_pt": round(limit, 1),
+                "measured_from": "body text extents"
+                if ctx.has_coordinates
+                else "document section settings",
+            },
         )
 
     if not ctx.has_coordinates:
@@ -630,9 +642,11 @@ def check_margins(ctx: AnalysisContext) -> list[Finding]:
                     cfg.max_top_margin_pt if side in ("top", "bottom") else cfg.max_side_margin_pt
                 )
                 if value > limit:
-                    findings.append(finding("FMT_WIDE_MARGIN", side, value, None, False))
+                    findings.append(finding("FMT_WIDE_MARGIN", side, value, None, False, limit))
                 elif value < cfg.min_margin_pt:
-                    findings.append(finding("FMT_NARROW_MARGIN", side, value, None, True))
+                    findings.append(
+                        finding("FMT_NARROW_MARGIN", side, value, None, True, cfg.min_margin_pt)
+                    )
         return findings
 
     for page in ctx.content.pages:
@@ -650,14 +664,22 @@ def check_margins(ctx: AnalysisContext) -> list[Finding]:
         # checked for text too close to the edge: ragged-right (left-aligned) lines make a
         # wide right "margin" indistinguishable from short lines.
         if left > cfg.max_side_margin_pt:
-            findings.append(finding("FMT_WIDE_MARGIN", "left", left, page.number, False))
+            findings.append(
+                finding("FMT_WIDE_MARGIN", "left", left, page.number, False, cfg.max_side_margin_pt)
+            )
         for side, value in (("left", left), ("right", right)):
             if value < cfg.min_margin_pt:
-                findings.append(finding("FMT_NARROW_MARGIN", side, value, page.number, True))
+                findings.append(
+                    finding("FMT_NARROW_MARGIN", side, value, page.number, True, cfg.min_margin_pt)
+                )
         if page.number == 1 and top > cfg.max_top_margin_pt:
-            findings.append(finding("FMT_WIDE_MARGIN", "top", top, page.number, False))
+            findings.append(
+                finding("FMT_WIDE_MARGIN", "top", top, page.number, False, cfg.max_top_margin_pt)
+            )
         if top < cfg.min_margin_pt * 0.5:
-            findings.append(finding("FMT_NARROW_MARGIN", "top", top, page.number, True))
+            findings.append(
+                finding("FMT_NARROW_MARGIN", "top", top, page.number, True, cfg.min_margin_pt * 0.5)
+            )
     # Report each side once per document (first page that shows it).
     unique: dict[tuple[str, str], Finding] = {}
     for f in findings:
@@ -709,6 +731,96 @@ def check_garbled(ctx: AnalysisContext) -> list[Finding]:
     return findings
 
 
+def check_section_alignment(ctx: AnalysisContext) -> list[Finding]:
+    """A single line inside a section that starts a few points off the left edge shared by
+    the section's other lines. Measured from line boxes; deliberate indents (larger offsets,
+    bullet text, wrapped bullet lines, centred or right-hand text) are not reported."""
+    cfg = ctx.settings.analysis.formatting
+    if not ctx.has_coordinates:
+        return []
+    pages = {p.number: p for p in ctx.content.pages}
+    tol, max_off = cfg.misaligned_tolerance_pt, cfg.misaligned_max_offset_pt
+    groups: dict[tuple, list[TextLine]] = defaultdict(list)
+    bullet_text_x: dict[tuple, list[float]] = defaultdict(list)
+    previous: dict[tuple, TextLine] = {}
+    continuation: set[int] = set()
+    for tl in _body_lines(ctx):
+        if tl.bbox is None or tl.page not in pages or tl.section is None or tl.is_heading:
+            continue
+        key = (tl.section, tl.page, tl.block.column)
+        prev = previous.get(key)
+        if not _has_text(tl.text):
+            previous[key] = tl
+            continue
+        width = pages[tl.page].width_pt
+        if tl.bbox[0] > 0.5 * width or (
+            abs((tl.bbox[0] + tl.bbox[2]) / 2 - width / 2) < 10 and tl.bbox[0] > 0.2 * width
+        ):
+            continue  # right-hand (dates) or centred text
+        spans = [sp for sp in tl.line.spans if sp.bbox is not None]
+        if tl.is_bullet and len(spans) > 1:
+            bullet_text_x[key].append(spans[1].bbox[0])
+        if prev is not None and (prev.is_bullet or not _has_text(prev.text)) and not tl.is_bullet:
+            continuation.add(id(tl))  # wrapped bullet text or text after a bullet glyph line
+        groups[key].append(tl)
+        previous[key] = tl
+    findings: list[Finding] = []
+    for (section, page, column), lines in groups.items():
+        clusters: list[list[TextLine]] = []
+        for tl in sorted(lines, key=lambda t: t.bbox[0]):  # type: ignore[index]
+            if clusters and tl.bbox[0] - clusters[-1][-1].bbox[0] <= tol:  # type: ignore[index]
+                clusters[-1].append(tl)
+            else:
+                clusters.append([tl])
+        edges = [
+            (statistics.median(t.bbox[0] for t in c), len(c))  # type: ignore[index]
+            for c in clusters
+            if len(c) >= cfg.misaligned_min_lines
+        ]
+        if not edges:
+            continue
+        for c in clusters:
+            if len(c) != 1 or id(c[0]) in continuation:
+                continue
+            tl = c[0]
+            x = tl.bbox[0]  # type: ignore[index]
+            if any(abs(x - bx) <= tol for bx in bullet_text_x[(section, page, column)]):
+                continue
+            edge, count = min(edges, key=lambda e: abs(e[0] - x))
+            offset = abs(x - edge)
+            if not tol < offset <= max_off:
+                continue
+            findings.append(
+                make_finding(
+                    rule_id="FMT_MISALIGNED_LINE",
+                    category=FindingCategory.FORMATTING,
+                    finding_class=FindingClass.POTENTIAL_ISSUE,
+                    severity=FindingSeverity.LOW,
+                    rubric=SF,
+                    explanation=(
+                        f"In the {section} section this line starts {offset:.1f} pt away from "
+                        f"the left edge shared by {count} other lines."
+                    ),
+                    correction="Align this line with the other lines of the section.",
+                    method=DetectionMethod.GEOMETRY,
+                    confidence=0.6,
+                    detected_text=tl.text,
+                    location=locate(tl),
+                    section=section,
+                    evidence={
+                        "line_x_pt": round(x, 1),
+                        "shared_edge_pt": round(edge, 1),
+                        "offset_pt": round(offset, 1),
+                        "lines_at_shared_edge": count,
+                        "tolerance_pt": tol,
+                        "max_offset_pt": max_off,
+                    },
+                )
+            )
+            break  # one example per section and page
+    return findings
+
+
 def check_formatting(ctx: AnalysisContext) -> list[Finding]:
     findings: list[Finding] = []
     for check in (
@@ -716,6 +828,7 @@ def check_formatting(ctx: AnalysisContext) -> list[Finding]:
         check_sizes,
         check_spacing,
         check_alignment,
+        check_section_alignment,
         check_margins,
         check_garbled,
     ):

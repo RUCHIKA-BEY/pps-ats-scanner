@@ -208,7 +208,9 @@ class FakeEvaluator:
 
 def _ai_settings(**ai):
     settings = load_settings()
-    settings.scoring.ai = settings.scoring.ai.model_copy(update={"enabled": True, **ai})
+    settings.scoring.ai = settings.scoring.ai.model_copy(
+        update={"enabled": True, "advisory_only": False, **ai}
+    )
     return settings
 
 

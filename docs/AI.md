@@ -15,7 +15,7 @@ scanner cannot judge:
 |---|---|
 | sees | redacted section text (names, e-mails, phones, profile URLs, student IDs replaced), rubric descriptors, deterministic scores, scanner rule ids |
 | never sees | invalid, non-resume or unreadable documents (they are not analysed) |
-| may propose | per criterion an adjustment, clipped to ±`max_adjustment` (default 1), applied only if `confidence ≥ min_confidence` |
+| may propose | per criterion an adjustment, clipped to ±`max_adjustment` (default 1). With the default `advisory_only = true` it is **recorded, never applied**; with `advisory_only = false` it is applied only if `confidence ≥ min_confidence` |
 | must provide | JSON with a verbatim quote for every claim; quotes not found in the text are rejected and listed in `ai_rejected` |
 | cannot | change validation, findings, review flags of the scanner, or final marks (faculty decide); a large proposal sends the document to review |
 | on failure | timeouts, non-JSON output or schema errors keep the deterministic marks (`ai_failed` in the audit) |
@@ -61,3 +61,25 @@ per-document timeout.
 
 Run `benchmark-ai` on the held-out faculty-corrected set (see `docs/EVALUATION.md`).
 Enable AI for a faculty pilot only if the decision is `eligible_for_faculty_pilot`.
+
+## Contextual review pathway (advisory, default)
+
+Career-objective relevance, project quality and professional tone need context that
+deterministic rules cannot judge. The pathway for them:
+
+1. **Off by default.** `enabled = false`; when switched on, use a local model only (`provider = "local"`).
+2. **Advisory only.** `advisory_only = true` (default): every proposal is stored in
+   `CriterionScore.ai` with `accepted = false` and reason "advisory only"; CA1 marks are
+   the deterministic marks. Only a faculty decision (override) changes a mark.
+3. **Uncertainty.** Each proposal and observation carries the model's `confidence` (0-1)
+   and `severity`; proposals below `min_confidence` are marked as such.
+4. **Evidence.** Every claim must quote the resume verbatim; quotes not found in the
+   redacted text are rejected (`ai_rejected`), so unsupported claims never reach faculty.
+5. **Privacy.** Names, e-mails, phones, profile URLs and student IDs are redacted before
+   the request; external providers are refused unless explicitly authorised.
+6. **Adoption.** Applying adjustments (`advisory_only = false`) is a rubric decision that
+   needs the `[evaluation.ai_adoption]` evidence (faculty-marked documents, MAE improvement)
+   from `benchmark-ai`; until then observations are review aids only.
+
+Deterministic companions (0 marks, reported with evidence): `CQ_OBJECTIVE_GENERIC`
+(stock phrases), `CQ_OBJECTIVE_NO_ROLE` (fields named but no role), `CQ_OBJECTIVE_NO_TARGET`.

@@ -246,9 +246,13 @@ def score_analysis(
                     clipped = max(
                         -cfg.ai.max_adjustment, min(cfg.ai.max_adjustment, proposal.adjustment)
                     )
-                    accepted = proposal.confidence >= cfg.ai.min_confidence
+                    accepted = (
+                        proposal.confidence >= cfg.ai.min_confidence and not cfg.ai.advisory_only
+                    )
                     reason = None
-                    if not accepted:
+                    if cfg.ai.advisory_only:
+                        reason = "advisory only: recorded for faculty review, not applied"
+                    elif not accepted:
                         reason = f"confidence {proposal.confidence:g} < {cfg.ai.min_confidence:g}"
                     elif clipped != proposal.adjustment:
                         reason = f"clipped to +/-{cfg.ai.max_adjustment:g}"

@@ -59,6 +59,7 @@ def ai_settings(server, **extra):  # type: ignore[no-untyped-def]
     settings.scoring.ai = settings.scoring.ai.model_copy(
         update={
             "enabled": True,
+            "advisory_only": False,  # these tests exercise the bounded adjustment itself
             "provider": "local",
             "model": "test-model",
             "base_url": f"http://127.0.0.1:{server.server_port}/v1",

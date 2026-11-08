@@ -89,6 +89,7 @@ placeholder_patterns = [
 [sections.head_nouns]
 projects = ["project", "projects"]
 certifications = ["certification", "certifications", "certificate", "certificates"]
+skills = ["skill", "skills"]
 
 [sections.canonical]
 summary = ["summary", "professional summary", "career summary", "profile", "professional profile",
@@ -101,7 +102,7 @@ experience = ["experience", "work experience", "professional experience", "emplo
               "experience and internships", "industrial experience"]
 projects = ["projects", "project", "academic projects", "personal projects", "project work",
             "key projects", "project experience", "major projects", "mini projects"]
-skills = ["skills", "technical skills", "key skills", "core skills", "skill set", "skillset",
+skills = ["skills", "skill", "technical skills", "key skills", "core skills", "skill set", "skillset",
           "core competencies", "competencies", "technical proficiency", "soft skills",
           "skills and abilities", "tools and technologies"]
 certifications = ["certifications", "certification", "certificates", "courses",

@@ -144,10 +144,35 @@ def check_paths(opts: BatchOptions, settings: Settings) -> None:
         )
 
 
+_CODE_FINGERPRINT: str | None = None
+
+
+def code_fingerprint() -> str:
+    """Hash of the scanner's own source and resource files (evaluation and batch tooling
+    excluded): a code fix must never be hidden behind reused results."""
+    global _CODE_FINGERPRINT
+    if _CODE_FINGERPRINT is None:
+        package = Path(__file__).resolve().parents[1]
+        digest = hashlib.sha256()
+        files = sorted(
+            p
+            for p in package.rglob("*")
+            if p.is_file()
+            and p.suffix in (".py", ".txt", ".toml")
+            and "__pycache__" not in p.parts
+            and not {"evaluation", "batch", "devtools"} & set(p.relative_to(package).parts[:1])
+        )
+        for path in files:
+            digest.update(path.relative_to(package).as_posix().encode())
+            digest.update(path.read_bytes())
+        _CODE_FINGERPRINT = digest.hexdigest()[:16]
+    return _CODE_FINGERPRINT
+
+
 def fingerprint(settings: Settings, manifest_path: Path | None) -> str:
-    """Results are reused only when this matches: engine + settings + manifest."""
+    """Results are reused only when this matches: scanner code + settings + manifest."""
     digest = hashlib.sha256()
-    digest.update(f"{__version__}|{BATCH_SCHEMA_VERSION}|".encode())
+    digest.update(f"{__version__}|{BATCH_SCHEMA_VERSION}|{code_fingerprint()}|".encode())
     digest.update(settings.model_dump_json(exclude={"source", "batch", "evaluation"}).encode())
     if manifest_path is not None:
         digest.update(sha256_file(manifest_path).encode())

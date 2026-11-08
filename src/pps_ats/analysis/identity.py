@@ -148,8 +148,32 @@ def _name_candidate(ctx: AnalysisContext) -> tuple[str | None, float, TextLine |
         if best is None or score > best[0]:
             best = (score, text, tl)
     if best is None:
-        return None, 0.0, None
+        return _largest_text_name(ctx, stop, placeholder_lines)
     return best[1], round(min(0.95, 0.35 + best[0] / 3), 2), best[2]
+
+
+def _largest_text_name(
+    ctx: AnalysisContext, stop: set[str], placeholder_lines: set
+) -> tuple[str | None, float, TextLine | None]:
+    """Fallback for layouts that open with a heading (name in a sidebar or header): the
+    topmost name-shaped line in the largest font on page 1. Lower confidence."""
+    page1 = [t for t in ctx.all_lines() if t.page in (1, None) and t.size and not t.is_heading]
+    if not page1:
+        return None, 0.0, None
+    largest = max(t.size for t in page1)
+    for tl in sorted(page1, key=lambda t: t.bbox[1] if t.bbox else 0.0):
+        if tl.size < largest - 0.1 or (tl.block_id, tl.line_index) in placeholder_lines:
+            continue
+        text = re.split(r"\s[|•·,]\s|\s{3,}", tl.text.strip())[0].strip()
+        words = text.split()
+        if not 2 <= len(words) <= 5 or any(c.isdigit() or c == "@" for c in text):
+            continue
+        if not all(_NAME_TOKEN_RE.match(w) for w in words):
+            continue
+        if any(w.lower().strip(".") in stop for w in words):
+            continue
+        return text, 0.55, tl
+    return None, 0.0, None
 
 
 def extract_identity(ctx: AnalysisContext) -> tuple[ExtractedIdentity, TextLine | None]:

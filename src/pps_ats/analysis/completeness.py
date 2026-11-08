@@ -157,15 +157,33 @@ def _finding_for(
 
     if status is CompletenessStatus.MISSING:
         if name == "contact":
+            # Contact details are often placed in a header graphic: if the top of page 1
+            # holds images, the text-only check cannot rule that out -> human review.
+            heights = {p.number: p.height_pt for p in ctx.content.pages}
+            image_on_top = any(
+                img.page == 1
+                and img.bbox is not None
+                and img.bbox[1] < 0.35 * heights.get(1, 842.0)
+                for img in ctx.content.images
+            )
+            if image_on_top:
+                common["evidence"]["images_at_top_of_page_1"] = True
             return make_finding(
                 rule_id="SEC_CONTACT_MISSING",
                 finding_class=FindingClass.DEFINITE_DEFECT,
                 severity=FindingSeverity.HIGH,
-                explanation="No e-mail address or phone number was found in the document.",
-                correction=f"Add {_WHAT_TO_ADD['contact']}.",
+                explanation="No e-mail address or phone number was found in the document text."
+                + (
+                    " The top of the first page contains images: check whether the contact "
+                    "details are inside an image (an ATS cannot read them there)."
+                    if image_on_top
+                    else ""
+                ),
+                correction=f"Add {_WHAT_TO_ADD['contact']} as text, not as an image.",
                 method=DetectionMethod.PATTERN,
-                confidence=0.85,
+                confidence=0.6 if image_on_top else 0.85,
                 ats_impact=True,
+                review_required=image_on_top,
                 **common,
             )
         if required:

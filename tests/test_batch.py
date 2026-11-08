@@ -367,3 +367,16 @@ def test_module_entry_point_with_worker_processes(tmp_path):
     done = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
     assert done.returncode == 0, done.stderr[-500:]
     assert json.loads((out / "batch_summary.json").read_text(encoding="utf-8"))["processed"] == 3
+
+
+def test_scanner_code_change_invalidates_reuse(tmp_path, settings, monkeypatch):
+    from pps_ats.batch import runner
+
+    src = tmp_path / "in"
+    synthetic.resume_pdf(src / "a.pdf")
+    out = tmp_path / "out"
+    run_batch(opts(src, out, timeout_s=0), settings, quiet)
+    assert run_batch(opts(src, out, timeout_s=0), settings, quiet).reused == 1
+    monkeypatch.setattr(runner, "_CODE_FINGERPRINT", "a-different-scanner-build")
+    again = run_batch(opts(src, out, timeout_s=0), settings, quiet)
+    assert again.processed == 1 and again.reused == 0

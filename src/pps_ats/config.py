@@ -56,6 +56,8 @@ class SectionSettings(BaseModel):
     max_heading_words: int = 6
     required: list[str] = Field(default_factory=list)
     canonical: dict[str, list[str]] = Field(default_factory=dict)
+    # Section nouns accepted with up to 3 modifiers when strongly formatted ("Major Project").
+    head_nouns: dict[str, list[str]] = Field(default_factory=dict)
     placeholder_patterns: list[str] = Field(default_factory=list)
 
 
@@ -142,6 +144,12 @@ class ContentSettings(BaseModel):
     institution_keywords: list[str] = Field(default_factory=list)
     certification_issuers: list[str] = Field(default_factory=list)
     incomplete_endings: list[str] = Field(default_factory=list)
+    team_markers: list[str] = Field(default_factory=list)
+    individual_markers: list[str] = Field(default_factory=list)
+    outcome_markers: list[str] = Field(default_factory=list)
+    outcome_min_words: int = 20
+    generic_tech_markers: list[str] = Field(default_factory=list)
+    objective_target_terms: list[str] = Field(default_factory=list)
 
 
 class LanguageSettings(BaseModel):
@@ -153,6 +161,16 @@ class LanguageSettings(BaseModel):
     skip_sections: list[str] = Field(default_factory=lambda: ["contact"])
 
 
+class ContactCheckSettings(BaseModel):
+    enabled: bool = True
+    profile_hosts: dict[str, list[str]] = Field(default_factory=dict)
+    profile_labels: list[str] = Field(default_factory=list)
+    label_hosts: dict[str, str] = Field(default_factory=dict)
+    placeholder_hosts: list[str] = Field(default_factory=list)
+    placeholder_handles: list[str] = Field(default_factory=list)
+    multiline_min_lines: int = 3
+
+
 class AnalysisSettings(BaseModel):
     max_findings_per_rule: int = 25
     placeholders: PlaceholderSettings = Field(default_factory=PlaceholderSettings)
@@ -161,6 +179,7 @@ class AnalysisSettings(BaseModel):
     identity: IdentitySettings = Field(default_factory=IdentitySettings)
     content: ContentSettings = Field(default_factory=ContentSettings)
     language: LanguageSettings = Field(default_factory=LanguageSettings)
+    contact: ContactCheckSettings = Field(default_factory=ContactCheckSettings)
 
 
 # --------------------------------------------------------------------------- Milestone 3

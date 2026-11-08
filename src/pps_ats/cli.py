@@ -255,6 +255,30 @@ def _build_parser() -> argparse.ArgumentParser:
                 action="store_true",
                 help="with --force: rebuild even though reviewers have entered decisions",
             )
+    pp = sub.add_parser(
+        "partial-pilot",
+        help="calibration pilot on completely reviewed calibration documents only",
+    )
+    pp.add_argument("reference", type=Path)
+    pp.add_argument("-o", "--output", type=Path, required=True, help="new private folder")
+    pp.add_argument("--allow-synced-output", action="store_true")
+    pp.add_argument(
+        "--workbook",
+        type=Path,
+        help="read this saved review workbook (e.g. the backup an earlier pilot used)",
+    )
+    pa = sub.add_parser(
+        "pilot-audit", help="root causes of a calibration pilot's misses (aggregate counts)"
+    )
+    pa.add_argument("reference", type=Path)
+    pa.add_argument("--pilot", type=Path, required=True, help="partial-pilot output folder")
+    pa.add_argument("-o", "--output", type=Path, required=True, help="new private folder")
+    pa.add_argument("--allow-synced-output", action="store_true")
+    pa.add_argument(
+        "--location-level",
+        action="store_true",
+        help="replay the earlier label+page matching (for pilots made before strict matching)",
+    )
     fr = sub.add_parser("finalize-review", help="reference annotations from accepted rows")
     fr.add_argument("reference", type=Path)
     fr.add_argument("--split", required=True, choices=["calibration", "evaluation"])
@@ -565,6 +589,42 @@ def _run_reference(args: argparse.Namespace, settings) -> int:  # type: ignore[n
         elif args.command == "finalize-review":
             done = ref.finalize_review(args.reference, settings, args.split)
             print(f"{args.split}: {done}", file=sys.stderr)
+        elif args.command == "partial-pilot":
+            from pps_ats.evaluation.pilot import run_partial_pilot
+
+            problem = _private_output(args.output, args.allow_synced_output, settings)
+            if problem:
+                print(f"error: {problem}", file=sys.stderr)
+                return 2
+            s = run_partial_pilot(args.reference, args.output, settings, args.workbook)
+            m = s["metrics"]
+            print(
+                f"partial pilot: {s['usable_documents']} usable documents of "
+                f"{s['calibration_documents']} calibration; excluded {s['excluded']}; "
+                f"{s['verified_annotations']} verified annotations; detectable-error recall "
+                f"{m['detectable_error_recall']} (n={m['detectable_error_annotations']}); "
+                f"precision/F1 not computed; reference unchanged "
+                f"{s['reference_files_unchanged']} -> {args.output / 'pilot_summary.md'}",
+                file=sys.stderr,
+            )
+        elif args.command == "pilot-audit":
+            from pps_ats.evaluation.pilot_audit import run_pilot_audit
+
+            problem = _private_output(args.output, args.allow_synced_output, settings)
+            if problem:
+                print(f"error: {problem}", file=sys.stderr)
+                return 2
+            a = run_pilot_audit(
+                args.reference, args.pilot, args.output, settings, not args.location_level
+            )
+            print(
+                f"pilot audit: {a['detectable_annotations']} applicable corrections in "
+                f"{a['documents']} documents; misses by cause {a['misses_by_cause']}; matches "
+                f"by validity {a['matches_by_validity']}; recall {a['recall']}; original "
+                f"pilot unchanged {a['original_pilot_unchanged']} -> "
+                f"{args.output / 'audit_summary.md'}",
+                file=sys.stderr,
+            )
         elif args.command == "freeze-calibration":
             frozen = ref.freeze_calibration(args.reference, settings)
             print(f"calibration frozen: {frozen['fingerprint']}", file=sys.stderr)
@@ -708,6 +768,8 @@ def main(argv: list[str] | None = None) -> int:
             "verify-reference",
             "finalize-review",
             "freeze-calibration",
+            "partial-pilot",
+            "pilot-audit",
         ):
             return _run_reference(args, settings)
         result = scan_file(args.file, settings)

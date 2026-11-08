@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 
 from pps_ats.config import EvaluationSettings, ScoringSettings
 from pps_ats.evaluation.dataset import CRITERIA, ReferenceDocument
+from pps_ats.evaluation.topics import NATURAL_SECTION, TOPIC_SCOPED_LABELS, rule_family
 from pps_ats.schemas.findings import AnalysisResult
 from pps_ats.schemas.scoring import ScoringResult
 from pps_ats.scoring.engine import band_for
@@ -44,6 +45,7 @@ class Detection:
     page: int | None
     severity: str
     high: bool
+    section: str | None = None  # scanner section of the finding (audit only; not used to match)
 
 
 # ---------------------------------------------------------------- report schema
@@ -134,7 +136,15 @@ def detections(pred: Prediction, cfg: EvaluationSettings, include_ai: bool) -> l
                 or f.finding_class.value in cfg.high_severity_classes
             )
             out.append(
-                Detection(label, f.rule_id, f.detected_text, f.page_number, f.severity.value, high)
+                Detection(
+                    label,
+                    f.rule_id,
+                    f.detected_text,
+                    f.page_number,
+                    f.severity.value,
+                    high,
+                    f.section,
+                )
             )
     out = _merge_same_issue(out)
     if include_ai and pred.scoring is not None:
@@ -168,12 +178,38 @@ def _merge_same_issue(found: list[Detection]) -> list[Detection]:
     return kept
 
 
+def _relevant(ann, det: Detection) -> tuple[bool, str | None]:  # type: ignore[no-untyped-def]
+    """Whether a same-label detection may be credited for a faculty annotation.
+
+    * both sections known and different, and the detection is not in the label's own
+      section -> an unrelated finding elsewhere on the page;
+    * formatting/layout: the rule family must be one of the comment's topics; without
+      topic information the pair is not credited (kept as uncertain, not invented).
+    """
+    natural = NATURAL_SECTION.get(ann.label)
+    section = getattr(ann, "section", None)
+    if section and det.section and section != det.section and det.section != natural:
+        return False, "different section"
+    if ann.label in TOPIC_SCOPED_LABELS:
+        topics = getattr(ann, "topics", frozenset())
+        if not topics:
+            return False, "no topic information"
+        if rule_family(det.source) not in topics:
+            return False, "different topic"
+    return True, None
+
+
 def match_document(doc: ReferenceDocument, found: list[Detection], threshold: float) -> list[dict]:
     """Rows with outcome tp / fn / fp / fp_unverified for one document."""
     pairs: list[tuple[float, int, int]] = []
+    blocked: dict[int, str] = {}
     for ai, ann in enumerate(doc.annotations):
         for di, det in enumerate(found):
             if det.label != ann.label:
+                continue
+            ok, why = _relevant(ann, det)
+            if not ok:
+                blocked.setdefault(ai, why or "")
                 continue
             if ann.text:
                 score = similarity(ann.text, det.text)
@@ -214,7 +250,10 @@ def match_document(doc: ReferenceDocument, found: list[Detection], threshold: fl
         rows.append(row("tp", doc.annotations[ai], found[di], score))
     for ai, ann in enumerate(doc.annotations):
         if ai not in used_a:
-            rows.append(row("fn", ann=ann))
+            missed = row("fn", ann=ann)
+            if ai in blocked:
+                missed["note"] = f"same-label finding not credited: {blocked[ai]}"
+            rows.append(missed)
     fp = "fp" if doc.annotations_complete else "fp_unverified"
     for di, det in enumerate(found):
         if di not in used_d:

@@ -26,6 +26,7 @@ from pps_ats.schemas.content import (
     FontSource,
     ImageInfo,
     Line,
+    LinkInfo,
     PageInfo,
     Region,
     Span,
@@ -142,6 +143,7 @@ def _parse_open_document(doc: pymupdf.Document, settings: Settings) -> PdfParseO
     blocks: list[Block] = []
     tables: list[Table] = []
     images: list[ImageInfo] = []
+    links: list[LinkInfo] = []
     all_spans: list[Span] = []
 
     max_pages = settings.limits.max_pages
@@ -157,6 +159,15 @@ def _parse_open_document(doc: pymupdf.Document, settings: Settings) -> PdfParseO
         except Exception as exc:
             warnings.append(f"page {page_no}: text extraction failed ({type(exc).__name__})")
             continue
+        try:
+            for link in page.get_links():
+                uri = link.get("uri")
+                if uri:
+                    links.append(
+                        LinkInfo(uri=uri[:500], page=page_no, bbox=round_bbox(link["from"]))
+                    )
+        except Exception:  # links are optional evidence; never fail the parse
+            pass
 
         rect = page.rect
         page_blocks: list[Block] = []
@@ -308,6 +319,7 @@ def _parse_open_document(doc: pymupdf.Document, settings: Settings) -> PdfParseO
         blocks=blocks,
         tables=tables,
         images=images,
+        links=links,
         stats=compute_text_stats(body_text, all_spans, line_count),
         diagnostics=diagnostics,
     )

@@ -38,6 +38,7 @@ from openpyxl.worksheet.datavalidation import DataValidation
 from pps_ats import __version__
 from pps_ats.config import Settings
 from pps_ats.evaluation.importer import CANDIDATES, _write_csv
+from pps_ats.evaluation.topics import topic_of
 
 MANIFEST = "reference_manifest.json"
 REVIEW_DIR = "review"
@@ -64,7 +65,7 @@ def phone_numbers(text: str) -> set[str]:
 
 ANNOTATION_FIELDS = [
     "document_id", "label", "severity", "text", "page", "criterion", "source",
-    "annotator_id", "comment", "intent", "reviewer_id",
+    "annotator_id", "comment", "intent", "reviewer_id", "section", "topics",
 ]  # fmt: skip
 REVIEW_COLUMNS = [
     ("candidate_id", 12),
@@ -617,10 +618,11 @@ def build_review_workbook(
     return path
 
 
-def read_review(ref: Path) -> list[dict[str, str]]:
+def read_review(ref: Path, workbook: Path | None = None) -> list[dict[str, str]]:
     """All review rows (both sheets). A row whose candidate_id was cleared but which holds
     reviewer input is returned with ``candidate_id = ''`` so it is reported, not lost."""
-    wb = load_workbook(Path(ref) / REVIEW_DIR / REVIEW_BOOK, read_only=True, data_only=True)
+    path = Path(workbook) if workbook else Path(ref) / REVIEW_DIR / REVIEW_BOOK
+    wb = load_workbook(path, read_only=True, data_only=True)
     out = []
     for split in ("calibration", "evaluation"):
         rows = list(wb[split].iter_rows(values_only=True))
@@ -663,16 +665,24 @@ def _row_problem(row: dict[str, str], labels: set[str]) -> str | None:
 
 
 def _check_split(
-    ref: Path, settings: Settings, split: str, rows: list[dict[str, str]]
+    ref: Path,
+    settings: Settings,
+    split: str,
+    rows: list[dict[str, str]],
+    only_documents: set[str] | None = None,
 ) -> tuple[dict, list[str]]:
-    """Counts and problems for one split, comparing the sheet with the candidate list."""
+    """Counts and problems for one split (optionally a subset of its documents),
+    comparing the sheet with the candidate list."""
     labels = set(settings.evaluation.labels)
     docs = {d["document_id"]: d for d in _rows(ref / "documents.csv")}
     expected = {
         c["candidate_id"]: c
         for c in _rows(ref / CANDIDATES)
         if docs[c["document_id"]]["split"] == split
+        and (only_documents is None or c["document_id"] in only_documents)
     }
+    if only_documents is not None:
+        rows = [r for r in rows if r.get("document_id") in only_documents]
     counts = {"total": len(expected), "confirmed": 0, "rejected": 0, "unclear": 0,
               "unreviewed": 0, "invalid": 0, "missing": 0}  # fmt: skip
     problems: list[str] = []
@@ -784,6 +794,8 @@ def finalize_review(ref: Path, settings: Settings, split: str) -> dict:
                 "comment": comment,
                 "intent": r["faculty_intent"].strip().lower(),
                 "reviewer_id": r["reviewer_id"],
+                "section": c.get("associated_section", ""),
+                "topics": ",".join(sorted(topic_of(c.get("teacher_comment", "")))),
             }
         )
     _write_csv(ref / "annotations.csv", ANNOTATION_FIELDS, keep + new)

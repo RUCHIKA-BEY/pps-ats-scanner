@@ -92,3 +92,45 @@ reviewed independently (see `docs/FACULTY_INTAKE.md`, section 6).
 
 If you change decisions after finalising, run `finalize-review --split calibration` again;
 editing `annotations.csv` by hand is detected and blocks evaluation.
+
+## Partial calibration pilot (before the whole sheet is reviewed)
+
+```powershell
+python -m pps_ats partial-pilot "D:\pps_private\corrected_only\reference_v1" -o "D:\pps_private\corrected_only\pilot_partial_<date>"
+```
+
+* Uses only **calibration** documents whose every row is decided (accept/reject, accepted
+  rows complete with `final_label`, `faculty_intent`, `reviewer_id`) and whose scanner input
+  is clean. Partly reviewed, unreviewed, ineligible and all held-out documents are excluded
+  and counted. Nothing is auto-accepted or filled in.
+* Reads the master workbook as saved on disk (save in Excel first); never writes to it, the
+  split or the reference; refuses to overwrite an existing pilot folder.
+* Reports recall for faculty corrections the scanner has rules for (`correction_required`);
+  recommendations, labels outside scanner scope and unclear intent are counted separately.
+  Scanner findings without a faculty annotation are *unverified*, not false positives, so
+  precision and F1 are not computed; there are no marks, so no score agreement.
+* Output: `pilot_summary.md/json`, `included_documents.csv`, `dataset\` and `report\`.
+
+## Auditing a pilot's misses
+
+```powershell
+python -m pps_ats pilot-audit "D:\pps_private\corrected_only\reference_v1" --pilot "D:\pps_private\corrected_only\pilot_partial_<date>" -o "D:\pps_private\corrected_only\pilot_partial_<date>_audit"
+```
+
+Re-derives the scanner findings for the pilot's calibration documents (from the exact
+workbook the pilot read: the master if unchanged, else the matching backup) and explains
+every applicable faculty correction: misses by root cause (`no_finding`,
+`section_not_detected`, `page_association`, `one_to_one_matching`,
+`label_mapping_confirmed/unconfirmed`) and matches by validity (`valid`,
+`different_section`, `topic_mismatch`, `topic_unverifiable`), with original vs strict
+recall. Writes aggregate counts and pseudonymous ids only; never modifies the pilot,
+the workbook, mappings or the split.
+
+The audit replays the evaluation matcher (strict by default: a formatting/layout finding
+must agree with the comment's topic, and a finding in an unrelated section is not credited);
+add `--location-level` to audit a pilot produced before strict matching. To repeat a pilot on
+the exact review input of an earlier run, pass that run's workbook backup:
+
+```powershell
+python -m pps_ats partial-pilot "D:\pps_private\corrected_only\reference_v1" -o "D:\pps_private\corrected_only\pilot_v2" --workbook "D:\pps_private\corrected_only\reference_v1\review\backups\<backup>.xlsx"
+```

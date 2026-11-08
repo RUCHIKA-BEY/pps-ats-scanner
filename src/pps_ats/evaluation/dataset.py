@@ -52,6 +52,8 @@ class ReferenceAnnotation:
     comment: str | None = None
     intent: str | None = None  # correction_required | recommendation | unclear
     reviewer_id: str | None = None
+    section: str | None = None  # resume section the faculty comment refers to
+    topics: frozenset[str] = frozenset()  # derived topic families (see evaluation.topics)
 
 
 @dataclass
@@ -219,6 +221,10 @@ def load_dataset(
                     comment=row.get("comment") or None,
                     intent=(row.get("intent") or "").lower() or None,
                     reviewer_id=row.get("reviewer_id") or None,
+                    section=row.get("section") or None,
+                    topics=frozenset(
+                        t.strip() for t in (row.get("topics") or "").split(",") if t.strip()
+                    ),
                 )
             )
     dataset = ReferenceDataset(

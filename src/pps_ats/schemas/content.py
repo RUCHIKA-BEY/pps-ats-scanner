@@ -107,6 +107,15 @@ class Table(BaseModel):
     source: str  # "docx" | "pymupdf_find_tables"
 
 
+class LinkInfo(BaseModel):
+    """A hyperlink target. PDF: from the page's link annotations (with position); DOCX:
+    from the document relationships (no position: DOCX pages are not rendered)."""
+
+    uri: str
+    page: int | None = None
+    bbox: BBox | None = None
+
+
 class ColumnLayout(BaseModel):
     column_count: int = 1
     gutters_x: list[float] = Field(default_factory=list)
@@ -173,5 +182,6 @@ class ExtractedContent(BaseModel):
     blocks: list[Block] = Field(default_factory=list)
     tables: list[Table] = Field(default_factory=list)
     images: list[ImageInfo] = Field(default_factory=list)
+    links: list[LinkInfo] = Field(default_factory=list)
     stats: TextStats = Field(default_factory=TextStats)
     diagnostics: ExtractionDiagnostics

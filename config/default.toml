@@ -83,6 +83,13 @@ placeholder_patterns = [
 ]
 
 # Canonical section -> heading variants (lower-case, matched after normalisation).
+# Section nouns that also identify a heading with up to 3 modifier words ("Major Project",
+# "Online Certifications", "Projects Undertaken"). Only for strongly formatted lines
+# (upper case, larger font or heading style) and never inside the same section.
+[sections.head_nouns]
+projects = ["project", "projects"]
+certifications = ["certification", "certifications", "certificate", "certificates"]
+
 [sections.canonical]
 summary = ["summary", "professional summary", "career summary", "profile", "professional profile",
            "objective", "career objective", "about me", "about", "personal statement"]
@@ -350,6 +357,55 @@ certification_issuers = ["coursera", "udemy", "nptel", "edx", "google", "aws", "
 incomplete_endings = ["and", "or", "to", "of", "with", "for", "in", "a", "an", "the", "as",
                       "by", "on", "at", "my", "which", "that", "where"]
 
+# Project-description refinements (faculty pilot): team wording without an individual role,
+# and descriptions that state no outcome. Outcome markers never require invented numbers.
+team_markers = ["we ", "our ", "team", "group project", "group of", "collaborated",
+                "together with", "along with", "in a group"]
+individual_markers = ["i ", "my role", "my contribution", "my part", "i was responsible",
+                      "responsible for", "individually", "solely", "personally", "role:",
+                      "contribution:", "led ", "as team lead", "as the lead", "i led"]
+outcome_markers = ["reduced", "improved", "increased", "achieved", "resulting", "resulted",
+                   "accuracy", "users", "deployed", "published", "won", "awarded", "saved",
+                   "faster", "decreased", "used by", "adopted", "selected", "rank", "winner",
+                   "secured", "launched", "live", "in production", "patent", "citation"]
+outcome_min_words = 20
+# Generic words that only count as technical context when a named technology follows.
+generic_tech_markers = ["using", "built with", "developed with", "implemented in",
+                        "written in", "tools", "technologies", "technology", "tech stack",
+                        "stack:"]
+# Career objective: a target role or field must be named (generic wording and relevance to a
+# specific job are left to the optional contextual AI evaluation).
+objective_target_terms = [
+    "intern", "internship", "engineer", "engineering", "developer", "development", "analyst",
+    "analytics", "scientist", "science", "designer", "design", "role", "position", "job",
+    "consultant", "architect", "administrator", "specialist", "programmer", "researcher",
+    "research", "tester", "testing", "manager", "management", "associate", "trainee",
+    "software", "data", "web", "cloud", "machine learning", "artificial intelligence", "ai",
+    "ml", "cyber", "security", "network", "embedded", "electronics", "mechanical", "civil",
+    "electrical", "finance", "marketing", "hr", "devops", "full stack", "full-stack",
+    "backend", "back-end", "frontend", "front-end", "mobile", "android", "ios", "iot",
+    "robotics", "automation", "sales", "operations", "product", "ui", "ux", "it ",
+    "computer", "technology", "technical", "teaching", "consulting", "business"]
+
+# ---- Contact presentation (faculty pilot) --------------------------------------------------
+[analysis.contact]
+enabled = true
+profile_labels = ["linkedin", "github", "gitlab", "portfolio"]
+placeholder_hosts = ["example.com", "yourwebsite.com", "website.com", "domain.com",
+                     "yourportfolio.com", "yourname.com", "portfolio.com"]
+placeholder_handles = ["yourname", "your-name", "your_name", "yourprofile", "username",
+                       "user-name", "user_name", "name", "xyz", "abc", "example", "profile",
+                       "handle", "yourhandle", "your-handle"]
+multiline_min_lines = 3
+[analysis.contact.profile_hosts]
+linkedin = ["linkedin"]
+code = ["github", "gitlab", "bitbucket", "portfolio", "behance", "dribbble", "kaggle",
+        "leetcode", "hackerrank", "codechef", "codeforces", "huggingface"]
+[analysis.contact.label_hosts]
+linkedin = "linkedin.com"
+github = "github.com"
+gitlab = "gitlab.com"
+
 # ---- Spelling and language ----------------------------------------------------------------
 # Local pyspellchecker dictionary + src/pps_ats/resources/tech_terms.txt (+ extra words here).
 [analysis.language]
@@ -472,6 +528,29 @@ max_count = 5
 points = 0.5
 
 # A section-level finding already penalises the line-level findings it summarises.
+# Rules added after the faculty calibration pilot: reported with evidence but worth
+# 0 CA1 points until faculty calibrate them (CA1 weights are unchanged).
+[scoring.rules.CONTACT_LINKEDIN_MISSING]
+points = 0
+[scoring.rules.CONTACT_CODE_PROFILE_MISSING]
+points = 0
+[scoring.rules.CONTACT_LINK_TEXT_ONLY]
+points = 0
+[scoring.rules.CONTACT_PLACEHOLDER_LINK]
+points = 0
+[scoring.rules.CONTACT_EMAIL_MALFORMED]
+points = 0
+[scoring.rules.CONTACT_PHONE_INCOMPLETE]
+points = 0
+[scoring.rules.CONTACT_DETAILS_MULTILINE]
+points = 0
+[scoring.rules.CQ_PROJECT_TEAM_ROLE_UNCLEAR]
+points = 0
+[scoring.rules.CQ_PROJECT_NO_OUTCOME]
+points = 0
+[scoring.rules.CQ_OBJECTIVE_NO_TARGET]
+points = 0
+
 [scoring.supersedes]
 SEC_PLACEHOLDER_ONLY = ["PH_*"]
 SEC_EMPTY = ["PH_EMPTY_FIELD"]
@@ -572,6 +651,10 @@ certification_details = ["CQ_CERTIFICATION_DETAILS"]
 duplicate_content = ["CQ_REPEATED_LINE", "CQ_NEAR_DUPLICATE_LINE"]
 identity = ["IDENTITY_*"]
 uncertain_structure = ["SEC_UNCERTAIN", "FMT_GARBLED_TEXT"]
+# Faculty labels with no scanner rule yet: always counted as missed, never as detected.
+section_title = []               # "title as skills", "rename section to ..."
+section_order = []               # "mention before skills", "move ... above ..."
+other_feedback = []              # faculty advice that fits no label (kept, not scored)
 
 # AI assistance is recommended for a pilot only if ALL of these hold on the held-out split.
 [evaluation.ai_adoption]
@@ -585,3 +668,45 @@ require_ci_excludes_zero = true    # 95% paired-bootstrap CI of the total-MAE ch
 [evaluation.fine_tuning]
 min_paired_documents = 500         # faculty-marked + fully annotated, calibration split
 min_evaluation_documents = 100     # held-out, never used for tuning
+
+# ---------------------------------------------------------------- import of teacher corrections
+# Used only by `import-corrections` to SUGGEST a canonical label for a teacher comment.
+# One matching label => suggested (still reviewable); several or none => needs_review.
+[evaluation.import]
+red_min = 0.6                     # a span/drawing is "red" if R >= red_min ...
+red_max_other = 0.35              # ... and G, B <= red_max_other
+high_severity_words = ["must", "major", "critical", "serious", "incorrect", "wrong", "missing"]
+low_severity_words = ["minor", "optional", "consider", "could", "suggest", "maybe"]
+corrected_suffixes = ["_corrected", "-corrected", "_reviewed", "-reviewed", "_annotated",
+                      "-annotated", "_checked", "-checked", " (corrected)"]
+
+[evaluation.import.keywords]
+spelling = ["spelling", "spell", "typo", "misspel"]
+grammar = ["grammar", "tense", "punctuation", "article", "sentence structure", "subject-verb"]
+placeholder = ["placeholder", "template", "lorem", "your name", "fill in", "dummy", "sample text"]
+missing_section = ["missing section", "add section", "add a section", "section missing", "no section"]
+empty_section = ["empty section", "section is empty", "blank section", "nothing under"]
+contact = ["contact", "email", "e-mail", "phone", "mobile", "linkedin", "github"]
+formatting = ["format", "font", "alignment", "align", "spacing", "margin", "bold", "indent", "bullet"]
+layout = ["layout", "column", "table", "text box", "header", "footer", "photo"]
+career_objective = ["objective", "summary", "career goal", "profile statement"]
+project_description = ["project", "description", "contribution", "tech stack", "technologies used"]
+weak_language = ["weak", "vague", "generic", "passive", "action verb", "informal", "tone", "casual", "filler"]
+education_details = ["education", "cgpa", "gpa", "percentage", "degree", "year of passing",
+                     "10th", "12th", "ssc", "hsc"]
+certification_details = ["certification", "certificate"]
+duplicate_content = ["duplicate", "repeated", "repetition", "redundant"]
+identity = ["name mismatch", "wrong name", "not your resume", "someone else"]
+
+# Instruction patterns (regular expressions on the lower-cased comment) for corrected-only
+# intake. They are tried before the keywords; one matching label => suggested,
+# several => needs_review. Tuned on the example instructions supplied with the request,
+# not on the faculty files themselves.
+[evaluation.import.patterns]
+section_title = ['^(title|retitle|rename)\b', '\btitle (it |this )?as\b', '\brename (the )?(section|heading)\b', '\bheading (should be|as)\b']
+section_order = ['\b(before|after|above|below)\s+(the\s+)?(skills|education|projects?|experience|internships?|summary|objective|certifications?|achievements|participation)\b', '^move\b', '\border of (the )?sections\b']
+missing_section = ['^(pl(ease|z)\s+)?add (a |an |the )?(career objective|objective|summary|profile|skills|projects?|experience|internships?|certifications?|achievements|hobbies|declaration|languages)\b']
+education_details = ['\b(10th|12th|ssc|hsc|class (x|xii|10|12)|cgpa|sgpa|percentage|year of passing)\b']
+weak_language = ['action[- ]oriented', '\baction verbs?\b', '\bconcise\b', '\bpassive\b']
+project_description = ['\bindividual contribution\b', '\byour contribution\b', '\btech(nology)? stack\b', '\bproject description\b']
+career_objective = ['\bobjective (is|should|needs|must)\b', '\bgeneric objective\b']

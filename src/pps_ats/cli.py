@@ -7,6 +7,8 @@ python -m pps_ats score FILE [--output score.json] [--audit-log audit/ca1.jsonl]
 python -m pps_ats review score.json --reviewer F01 --reason "..." --override content_relevance=7
 python -m pps_ats annotate FILE --output annotated.pdf
 python -m pps_ats batch INPUT_DIR --output PRIVATE_OUTPUT_DIR [--manifest m.csv] [--timeout 120]
+python -m pps_ats import-corrections INTAKE --output DATASET
+python -m pps_ats finalize-annotations DATASET
 python -m pps_ats eval-split DATASET
 python -m pps_ats evaluate DATASET --output PRIVATE_REPORT_DIR [--variant A|B]
 python -m pps_ats benchmark-ai DATASET --output PRIVATE_REPORT_DIR
@@ -189,10 +191,97 @@ def _build_parser() -> argparse.ArgumentParser:
     split.add_argument("dataset", type=Path)
     split.add_argument("--eval-fraction", type=float, default=0.3)
     split.add_argument("--seed", type=int, default=13)
+    split.add_argument("--eval-count", type=int, help="exact number of evaluation documents")
+    split.add_argument("--stratify-by", help="documents.csv column to balance (e.g. "
+                       "scanner_input_status)")  # fmt: skip
+    split.add_argument("--group-by", help="documents.csv column kept within one split "
+                       "(e.g. group_id from reference-prepare)")  # fmt: skip
 
     sub.add_parser(
         "ai-check", help="check the AI provider policy and test it on a FICTIONAL resume"
     )
+    imp = sub.add_parser(
+        "import-corrections", help="teacher-corrected PDFs -> reference dataset draft + review CSV"
+    )
+    imp.add_argument("intake", type=Path, help="folder with originals/, corrected/, marks.csv")
+    imp.add_argument("-o", "--output", type=Path, required=True, help="dataset folder (private)")
+    imp.add_argument("--force", action="store_true", help="re-import (old files kept as .bak)")
+    imp.add_argument(
+        "--corrected-only",
+        action="store_true",
+        help="no separate originals: INTAKE holds faculty-corrected PDFs (optionally in "
+        "corrected/); faculty text is separated from student content",
+    )
+    imp.add_argument("--allow-synced-output", action="store_true")
+
+    fin = sub.add_parser(
+        "finalize-annotations", help="write annotations.csv from the reviewed candidates"
+    )
+    fin.add_argument("dataset", type=Path)
+    fin.add_argument(
+        "--allow-unresolved",
+        action="store_true",
+        help="leave out rows still awaiting a decision (they are counted, not guessed)",
+    )
+    fin.add_argument(
+        "--accept-suggestions",
+        action="store_true",
+        help="treat undecided auto-mapped rows as accepted (off by default)",
+    )
+    prep = sub.add_parser(
+        "reference-prepare",
+        help="pseudonymised, integrity-checked reference copy of a corrected-only dataset",
+    )
+    prep.add_argument("source", type=Path, help="dataset written by import-corrections")
+    prep.add_argument("-o", "--output", type=Path, required=True, help="new reference folder")
+    prep.add_argument("--key-dir", type=Path, required=True, help="private id key (separate)")
+    prep.add_argument("--salvage-log", type=Path, help="recovery log with SHA-256 per file")
+    prep.add_argument("--intake", type=Path, help="intake folder (for the private id key)")
+    prep.add_argument("--duplicate-threshold", type=float, default=0.6)
+    prep.add_argument("--allow-synced-output", action="store_true")
+
+    for name, text in (
+        ("review-sheet", "build review/annotation_review.xlsx (one sheet per split)"),
+        ("review-status", "counts of confirmed / rejected / uncertain / unreviewed rows"),
+        ("verify-reference", "re-check hashes and clean scanner inputs (counts only)"),
+        ("freeze-calibration", "record the configuration used for calibration"),
+    ):
+        cmd = sub.add_parser(name, help=text)
+        cmd.add_argument("reference", type=Path)
+        if name == "review-sheet":
+            cmd.add_argument("--force", action="store_true", help="rebuild an untouched workbook")
+            cmd.add_argument(
+                "--discard-decisions",
+                action="store_true",
+                help="with --force: rebuild even though reviewers have entered decisions",
+            )
+    pp = sub.add_parser(
+        "partial-pilot",
+        help="calibration pilot on completely reviewed calibration documents only",
+    )
+    pp.add_argument("reference", type=Path)
+    pp.add_argument("-o", "--output", type=Path, required=True, help="new private folder")
+    pp.add_argument("--allow-synced-output", action="store_true")
+    pp.add_argument(
+        "--workbook",
+        type=Path,
+        help="read this saved review workbook (e.g. the backup an earlier pilot used)",
+    )
+    pa = sub.add_parser(
+        "pilot-audit", help="root causes of a calibration pilot's misses (aggregate counts)"
+    )
+    pa.add_argument("reference", type=Path)
+    pa.add_argument("--pilot", type=Path, required=True, help="partial-pilot output folder")
+    pa.add_argument("-o", "--output", type=Path, required=True, help="new private folder")
+    pa.add_argument("--allow-synced-output", action="store_true")
+    pa.add_argument(
+        "--location-level",
+        action="store_true",
+        help="replay the earlier label+page matching (for pilots made before strict matching)",
+    )
+    fr = sub.add_parser("finalize-review", help="reference annotations from accepted rows")
+    fr.add_argument("reference", type=Path)
+    fr.add_argument("--split", required=True, choices=["calibration", "evaluation"])
     return parser
 
 
@@ -378,11 +467,185 @@ def _run_evaluate(args: argparse.Namespace, settings) -> int:  # type: ignore[no
     return 0
 
 
+def _run_import(args: argparse.Namespace, settings) -> int:  # type: ignore[no-untyped-def]
+    from pps_ats.evaluation.importer import ImportError_, import_corrections
+
+    problem = _private_output(args.output, args.allow_synced_output, settings)
+    if problem:
+        print(f"error: {problem}", file=sys.stderr)
+        return 2
+    if args.corrected_only:
+        from pps_ats.evaluation.corrected_only import import_corrected_only
+
+        try:
+            c = import_corrected_only(args.intake, args.output, settings, force=args.force)
+        except (ImportError_, OSError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        print(
+            f"corrected-only: {c.documents} document(s), scanner input {c.by_status}; "
+            f"{c.candidates} candidate(s), {c.auto_mapped} auto-mapped, {c.needs_review} need "
+            f"review; faculty marks imported {c.marks_imported}; problems {len(c.problems)} "
+            f"-> {args.output / 'import_report.md'}",
+            file=sys.stderr,
+        )
+        return 0
+    try:
+        s = import_corrections(args.intake, args.output, settings, force=args.force)
+    except (ImportError_, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(
+        f"imported {s.documents} document(s) ({s.with_corrections} with corrections): "
+        f"{s.candidates} candidate(s), {s.auto_mapped} auto-mapped, {s.needs_review} need "
+        f"review; faculty marks imported {s.marks_imported}, rejected {len(s.marks_rejected)}; "
+        f"problems {len(s.problems)} -> {args.output / 'import_report.md'}",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def _run_finalize(args: argparse.Namespace, settings) -> int:  # type: ignore[no-untyped-def]
+    from pps_ats.evaluation.importer import ImportError_, finalize_annotations
+
+    try:
+        s = finalize_annotations(
+            args.dataset, settings, args.allow_unresolved, args.accept_suggestions
+        )
+    except (ImportError_, OSError, KeyError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    for problem in s.invalid:
+        print(f"invalid: {problem}", file=sys.stderr)
+    if s.invalid or (s.unresolved and not args.allow_unresolved):
+        print(
+            f"not written: {len(s.unresolved)} row(s) await a reviewer_decision, "
+            f"{len(s.invalid)} invalid row(s)",
+            file=sys.stderr,
+        )
+        return 1
+    print(
+        f"annotations.csv: {s.written} accepted, {s.rejected} rejected, "
+        f"{len(s.unresolved)} left out (undecided)",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def _run_reference(args: argparse.Namespace, settings) -> int:  # type: ignore[no-untyped-def]
+    from pps_ats.evaluation import reference as ref
+
+    try:
+        if args.command == "reference-prepare":
+            problem = _private_output(args.output, args.allow_synced_output, settings)
+            problem = problem or _private_output(args.key_dir, args.allow_synced_output, settings)
+            if problem:
+                print(f"error: {problem}", file=sys.stderr)
+                return 2
+            m = ref.prepare_reference(
+                args.source,
+                args.output,
+                args.key_dir,
+                settings,
+                args.salvage_log,
+                args.intake,
+                args.duplicate_threshold,
+            )
+            print(
+                f"reference: {m['documents_total']} documents ({m['eligible']} eligible, "
+                f"ineligible {m['ineligible']}), {m['candidates']} candidates, salvage-log "
+                f"matches {m['salvage_log_matches']}/{m['salvage_log_complete_entries']}, "
+                f"duplicates {m['duplicates']} -> {args.output}",
+                file=sys.stderr,
+            )
+        elif args.command == "review-sheet":
+            path = ref.build_review_workbook(
+                args.reference, settings, args.force, args.discard_decisions
+            )
+            print(f"review workbook -> {path}", file=sys.stderr)
+        elif args.command == "review-status":
+            st = ref.review_status(args.reference, settings)
+            for split, c in st.by_split.items():
+                state = (
+                    "FINALISED" if c["finalized"]
+                    else "ready to finalise" if c["ready_to_finalize"]
+                    else f"{c['remaining']} remaining"
+                )  # fmt: skip
+                print(
+                    f"{split:<11} {c['total']:>4} rows | accepted {c['confirmed']:>4} | rejected "
+                    f"{c['rejected']:>4} | unclear {c['unclear']:>4} | not reviewed "
+                    f"{c['unreviewed']:>4} | invalid {c['invalid']:>3} | missing {c['missing']:>3}"
+                    f" -> {state}",
+                    file=sys.stderr,
+                )
+            for problem in st.invalid[:20]:
+                print(f"  fix: {problem}", file=sys.stderr)
+            if len(st.invalid) > 20:
+                print(f"  ... and {len(st.invalid) - 20} more", file=sys.stderr)
+        elif args.command == "verify-reference":
+            rep = ref.verify_reference(args.reference, settings)
+            print(json.dumps(rep.__dict__, indent=2), file=sys.stderr)
+            return 1 if rep.failures else 0
+        elif args.command == "finalize-review":
+            done = ref.finalize_review(args.reference, settings, args.split)
+            print(f"{args.split}: {done}", file=sys.stderr)
+        elif args.command == "partial-pilot":
+            from pps_ats.evaluation.pilot import run_partial_pilot
+
+            problem = _private_output(args.output, args.allow_synced_output, settings)
+            if problem:
+                print(f"error: {problem}", file=sys.stderr)
+                return 2
+            s = run_partial_pilot(args.reference, args.output, settings, args.workbook)
+            m = s["metrics"]
+            print(
+                f"partial pilot: {s['usable_documents']} usable documents of "
+                f"{s['calibration_documents']} calibration; excluded {s['excluded']}; "
+                f"{s['verified_annotations']} verified annotations; detectable-error recall "
+                f"{m['detectable_error_recall']} (n={m['detectable_error_annotations']}); "
+                f"precision/F1 not computed; reference unchanged "
+                f"{s['reference_files_unchanged']} -> {args.output / 'pilot_summary.md'}",
+                file=sys.stderr,
+            )
+        elif args.command == "pilot-audit":
+            from pps_ats.evaluation.pilot_audit import run_pilot_audit
+
+            problem = _private_output(args.output, args.allow_synced_output, settings)
+            if problem:
+                print(f"error: {problem}", file=sys.stderr)
+                return 2
+            a = run_pilot_audit(
+                args.reference, args.pilot, args.output, settings, not args.location_level
+            )
+            print(
+                f"pilot audit: {a['detectable_annotations']} applicable corrections in "
+                f"{a['documents']} documents; misses by cause {a['misses_by_cause']}; matches "
+                f"by validity {a['matches_by_validity']}; recall {a['recall']}; original "
+                f"pilot unchanged {a['original_pilot_unchanged']} -> "
+                f"{args.output / 'audit_summary.md'}",
+                file=sys.stderr,
+            )
+        elif args.command == "freeze-calibration":
+            frozen = ref.freeze_calibration(args.reference, settings)
+            print(f"calibration frozen: {frozen['fingerprint']}", file=sys.stderr)
+    except (ref.ReferenceError, OSError, KeyError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
 def _run_eval_split(args: argparse.Namespace) -> int:
     from pps_ats.evaluation.dataset import DatasetError, freeze_split
 
     try:
-        counts = freeze_split(args.dataset, args.eval_fraction, args.seed)
+        counts = freeze_split(
+            args.dataset,
+            args.eval_fraction,
+            args.seed,
+            eval_count=args.eval_count,
+            stratify_by=args.stratify_by,
+            group_by=args.group_by,
+        )
     except (DatasetError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -494,6 +757,21 @@ def main(argv: list[str] | None = None) -> int:
             return _run_eval_split(args)
         if args.command == "ai-check":
             return _run_ai_check(settings)
+        if args.command == "import-corrections":
+            return _run_import(args, settings)
+        if args.command == "finalize-annotations":
+            return _run_finalize(args, settings)
+        if args.command in (
+            "reference-prepare",
+            "review-sheet",
+            "review-status",
+            "verify-reference",
+            "finalize-review",
+            "freeze-calibration",
+            "partial-pilot",
+            "pilot-audit",
+        ):
+            return _run_reference(args, settings)
         result = scan_file(args.file, settings)
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)

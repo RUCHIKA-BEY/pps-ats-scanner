@@ -20,6 +20,7 @@ from pathlib import Path
 
 from pps_ats import __version__
 from pps_ats.analysis.completeness import assess_sections
+from pps_ats.analysis.contact_checks import check_contact
 from pps_ats.analysis.content_quality import check_content
 from pps_ats.analysis.context import AnalysisContext, ManifestRecord, build_context
 from pps_ats.analysis.formatting import check_formatting
@@ -74,6 +75,7 @@ MODULES: list[tuple[str, Callable[[AnalysisContext, _State], list[Finding]]]] = 
     ("placeholders", lambda ctx, _s: detect_placeholders(ctx)),
     ("section_completeness", _run_sections),
     ("identity", _run_identity),
+    ("contact", lambda ctx, _s: check_contact(ctx)),
     ("formatting", lambda ctx, _s: check_formatting(ctx)),
     ("layout", lambda ctx, _s: check_layout(ctx)),
     ("content_quality", lambda ctx, _s: check_content(ctx)),

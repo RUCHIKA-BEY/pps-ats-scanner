@@ -56,6 +56,8 @@ class SectionSettings(BaseModel):
     max_heading_words: int = 6
     required: list[str] = Field(default_factory=list)
     canonical: dict[str, list[str]] = Field(default_factory=dict)
+    # Section nouns accepted with up to 3 modifiers when strongly formatted ("Major Project").
+    head_nouns: dict[str, list[str]] = Field(default_factory=dict)
     placeholder_patterns: list[str] = Field(default_factory=list)
 
 
@@ -142,6 +144,12 @@ class ContentSettings(BaseModel):
     institution_keywords: list[str] = Field(default_factory=list)
     certification_issuers: list[str] = Field(default_factory=list)
     incomplete_endings: list[str] = Field(default_factory=list)
+    team_markers: list[str] = Field(default_factory=list)
+    individual_markers: list[str] = Field(default_factory=list)
+    outcome_markers: list[str] = Field(default_factory=list)
+    outcome_min_words: int = 20
+    generic_tech_markers: list[str] = Field(default_factory=list)
+    objective_target_terms: list[str] = Field(default_factory=list)
 
 
 class LanguageSettings(BaseModel):
@@ -153,6 +161,16 @@ class LanguageSettings(BaseModel):
     skip_sections: list[str] = Field(default_factory=lambda: ["contact"])
 
 
+class ContactCheckSettings(BaseModel):
+    enabled: bool = True
+    profile_hosts: dict[str, list[str]] = Field(default_factory=dict)
+    profile_labels: list[str] = Field(default_factory=list)
+    label_hosts: dict[str, str] = Field(default_factory=dict)
+    placeholder_hosts: list[str] = Field(default_factory=list)
+    placeholder_handles: list[str] = Field(default_factory=list)
+    multiline_min_lines: int = 3
+
+
 class AnalysisSettings(BaseModel):
     max_findings_per_rule: int = 25
     placeholders: PlaceholderSettings = Field(default_factory=PlaceholderSettings)
@@ -161,6 +179,7 @@ class AnalysisSettings(BaseModel):
     identity: IdentitySettings = Field(default_factory=IdentitySettings)
     content: ContentSettings = Field(default_factory=ContentSettings)
     language: LanguageSettings = Field(default_factory=LanguageSettings)
+    contact: ContactCheckSettings = Field(default_factory=ContactCheckSettings)
 
 
 # --------------------------------------------------------------------------- Milestone 3
@@ -284,6 +303,16 @@ class FineTuningSettings(BaseModel):
     min_evaluation_documents: int = 100
 
 
+class CorrectionImportSettings(BaseModel):
+    red_min: float = 0.6
+    red_max_other: float = 0.35
+    high_severity_words: list[str] = Field(default_factory=list)
+    low_severity_words: list[str] = Field(default_factory=list)
+    corrected_suffixes: list[str] = Field(default_factory=list)
+    keywords: dict[str, list[str]] = Field(default_factory=dict)
+    patterns: dict[str, list[str]] = Field(default_factory=dict)
+
+
 class EvaluationSettings(BaseModel):
     text_match_threshold: float = 0.5
     high_severity_levels: list[str] = Field(default_factory=lambda: ["high"])
@@ -293,6 +322,11 @@ class EvaluationSettings(BaseModel):
     labels: dict[str, list[str]] = Field(default_factory=dict)
     ai_adoption: AIAdoptionSettings = Field(default_factory=AIAdoptionSettings)
     fine_tuning: FineTuningSettings = Field(default_factory=FineTuningSettings)
+    import_: CorrectionImportSettings = Field(
+        default_factory=CorrectionImportSettings, alias="import"
+    )
+
+    model_config = {"populate_by_name": True}
 
 
 class Settings(BaseModel):

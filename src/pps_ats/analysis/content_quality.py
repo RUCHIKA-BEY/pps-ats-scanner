@@ -46,6 +46,34 @@ _WORD_RE = re.compile(r"[A-Za-z][A-Za-z+#.'-]*")
 _LABEL_ONLY_RE = re.compile(r"^[A-Za-z ]{2,30}:\s*$")
 
 
+_NAMED_TECH_RE = re.compile(r"^(?:[A-Z][A-Za-z0-9.+#-]*|[a-z]+[0-9.+#][\w.+#-]*)$")
+_OUTCOME_NUMBER_RE = re.compile(
+    r"\d[\d,.]*\s?(?:%|x\b|\+|k\b|users|students|members|downloads|customers|visitors|"
+    r"ms\b|seconds|secs?\b|minutes|mins?\b|hours|hrs?\b|days|accuracy|rank|records|"
+    r"requests|queries|transactions)",
+    re.IGNORECASE,
+)
+
+
+def _term_in(text: str, term: str) -> bool:
+    term = term.strip().casefold()
+    return bool(term) and re.search(rf"(?<![a-z]){re.escape(term)}(?![a-z])", text) is not None
+
+
+def _named_tech_after(full: str, marker: str, tech_terms: set[str]) -> bool:
+    """A generic marker ('using', 'tools') followed within 3 words by a named
+    technology (a known tech term or a proper-noun-like token such as 'Flask', 'C++')."""
+    for m in re.finditer(rf"(?<![a-z]){re.escape(marker.strip())}", full.casefold()):
+        following = re.split(r"[\s,/()|]+", full[m.end() :].strip())[:3]
+        for token in following:
+            word = token.strip(".,;:")
+            if not word:
+                continue
+            if word.casefold() in tech_terms or _NAMED_TECH_RE.match(word):
+                return True
+    return False
+
+
 def _words(text: str) -> list[str]:
     return _WORD_RE.findall(text)
 
@@ -91,6 +119,8 @@ def _is_entry_header(
     if text.rstrip(" :").lower() in labels or _LABEL_ONLY_RE.match(text):
         return False, "", ""  # a field label such as "Description:" belongs to the entry
     inline = _INLINE_TITLE_RE.match(text)
+    if inline and inline.group("title").strip(" :").lower() in labels:
+        return False, "", ""  # "Technologies: React", "My role: ..." are fields of the entry
     if (
         inline
         and len(inline.group("title").split()) <= 8
@@ -245,8 +275,15 @@ def check_projects(ctx: AnalysisContext) -> list[Finding]:
         )
         lowered = full.lower()
         tokens = {w.lower().strip(".,;:()") for w in re.split(r"[\s,/()|]+", full) if w}
-        has_tech = bool(tokens & tech_terms) or any(
-            _contains_phrase(lowered, m) for m in cfg.technology_markers
+        generic = {g.casefold() for g in cfg.generic_tech_markers}
+        has_tech = (
+            bool(tokens & tech_terms)
+            or any(
+                _contains_phrase(lowered, m)
+                for m in cfg.technology_markers
+                if m.casefold() not in generic
+            )
+            or any(_named_tech_after(full, m, tech_terms) for m in generic)
         )
         if not has_tech:
             findings.append(
@@ -292,7 +329,65 @@ def check_projects(ctx: AnalysisContext) -> list[Finding]:
                     section="projects",
                 )
             )
+        padded = " " + lowered + " "
+        team = [m for m in cfg.team_markers if _contains_phrase(padded, m)]
+        individual = [m for m in cfg.individual_markers if _contains_phrase(padded, m)]
+        if has_contribution and team and not individual:
+            findings.append(
+                make_finding(
+                    rule_id="CQ_PROJECT_TEAM_ROLE_UNCLEAR",
+                    category=FindingCategory.CONTENT_QUALITY,
+                    finding_class=FindingClass.POTENTIAL_ISSUE,
+                    severity=FindingSeverity.MEDIUM,
+                    rubric=CR,
+                    explanation=(
+                        f"'{title}' is described as team work but does not say which part "
+                        "was yours."
+                    ),
+                    correction=(
+                        "Add one line on your own contribution (e.g. 'My role: built the "
+                        "REST API and the database schema'), describing only what you did."
+                    ),
+                    method=DetectionMethod.PATTERN,
+                    confidence=0.65,
+                    detected_text=title,
+                    location=location,
+                    section="projects",
+                    evidence={
+                        "team_markers": [t.strip() for t in team],
+                        "individual_markers": [],
+                    },  # fmt: skip
+                )
+            )
         word_count = len(_words(description))
+        has_outcome = bool(_OUTCOME_NUMBER_RE.search(full)) or any(
+            _term_in(lowered, m) for m in cfg.outcome_markers
+        )
+        if word_count >= cfg.outcome_min_words and not has_outcome:
+            findings.append(
+                make_finding(
+                    rule_id="CQ_PROJECT_NO_OUTCOME",
+                    category=FindingCategory.CONTENT_QUALITY,
+                    finding_class=FindingClass.RECOMMENDATION,
+                    severity=FindingSeverity.LOW,
+                    rubric=CR,
+                    explanation=(
+                        f"The description of '{title}' explains the work but states no "
+                        "result or outcome."
+                    ),
+                    correction=(
+                        "If the project had a result you can verify (users, accuracy, time "
+                        "saved, deployment, an award), state it. Do not add figures you "
+                        "cannot support."
+                    ),
+                    method=DetectionMethod.PATTERN,
+                    confidence=0.55,
+                    detected_text=title,
+                    location=location,
+                    section="projects",
+                    evidence={"word_count": word_count, "outcome_markers": []},
+                )
+            )
         if word_count < cfg.vague_min_words:
             findings.append(
                 make_finding(
@@ -621,7 +716,31 @@ def check_objective(ctx: AnalysisContext) -> list[Finding]:
                 evidence={"word_count": len(words)},
             )
         )
-    elif len(words) > cfg.objective_max_words:
+    if words and not any(_term_in(text.casefold(), t) for t in cfg.objective_target_terms):
+        findings.append(
+            make_finding(
+                rule_id="CQ_OBJECTIVE_NO_TARGET",
+                category=FindingCategory.CONTENT_QUALITY,
+                finding_class=FindingClass.POTENTIAL_ISSUE,
+                severity=FindingSeverity.LOW,
+                rubric=CR,
+                explanation="The career objective does not name a target role or field.",
+                correction=(
+                    "Name the role or field you are applying for (e.g. 'a software "
+                    "engineering internship in backend development')."
+                ),
+                method=DetectionMethod.PATTERN,
+                confidence=0.6,
+                detected_text=text,
+                location=location,
+                section="summary",
+                evidence={
+                    "note": "only the presence of a target is checked; whether the wording "
+                    "suits a specific job is left to optional contextual review"
+                },
+            )
+        )
+    if len(words) > cfg.objective_max_words:
         findings.append(
             make_finding(
                 rule_id="CQ_OBJECTIVE_TOO_LONG",

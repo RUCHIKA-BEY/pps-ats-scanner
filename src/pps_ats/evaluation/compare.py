@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 
 from pps_ats.config import EvaluationSettings, ScoringSettings
 from pps_ats.evaluation.dataset import CRITERIA, ReferenceDocument
+from pps_ats.evaluation.topics import NATURAL_SECTION, TOPIC_SCOPED_LABELS, rule_family
 from pps_ats.schemas.findings import AnalysisResult
 from pps_ats.schemas.scoring import ScoringResult
 from pps_ats.scoring.engine import band_for
@@ -44,6 +45,7 @@ class Detection:
     page: int | None
     severity: str
     high: bool
+    section: str | None = None  # scanner section of the finding (audit only; not used to match)
 
 
 # ---------------------------------------------------------------- report schema
@@ -86,6 +88,9 @@ class EvaluationReport(BaseModel):
     validation_errors: list[dict] = Field(default_factory=list)
     issue_metrics: dict[str, IssueCounts] = Field(default_factory=dict)
     issue_overall: IssueCounts = Field(default_factory=IssueCounts)
+    # faculty labels with no scanner rule: kept as feedback, not counted as scanner misses
+    outside_scanner_scope: dict[str, int] = Field(default_factory=dict)
+    recommendations: int = 0  # faculty annotations marked as advice, not defects
     high_severity: IssueCounts = Field(default_factory=IssueCounts)
     issue_rows: list[dict] = Field(default_factory=list)
     criterion_errors: dict[str, ErrorStats] = Field(default_factory=dict)
@@ -131,7 +136,15 @@ def detections(pred: Prediction, cfg: EvaluationSettings, include_ai: bool) -> l
                 or f.finding_class.value in cfg.high_severity_classes
             )
             out.append(
-                Detection(label, f.rule_id, f.detected_text, f.page_number, f.severity.value, high)
+                Detection(
+                    label,
+                    f.rule_id,
+                    f.detected_text,
+                    f.page_number,
+                    f.severity.value,
+                    high,
+                    f.section,
+                )
             )
     out = _merge_same_issue(out)
     if include_ai and pred.scoring is not None:
@@ -165,12 +178,38 @@ def _merge_same_issue(found: list[Detection]) -> list[Detection]:
     return kept
 
 
+def _relevant(ann, det: Detection) -> tuple[bool, str | None]:  # type: ignore[no-untyped-def]
+    """Whether a same-label detection may be credited for a faculty annotation.
+
+    * both sections known and different, and the detection is not in the label's own
+      section -> an unrelated finding elsewhere on the page;
+    * formatting/layout: the rule family must be one of the comment's topics; without
+      topic information the pair is not credited (kept as uncertain, not invented).
+    """
+    natural = NATURAL_SECTION.get(ann.label)
+    section = getattr(ann, "section", None)
+    if section and det.section and section != det.section and det.section != natural:
+        return False, "different section"
+    if ann.label in TOPIC_SCOPED_LABELS:
+        topics = getattr(ann, "topics", frozenset())
+        if not topics:
+            return False, "no topic information"
+        if rule_family(det.source) not in topics:
+            return False, "different topic"
+    return True, None
+
+
 def match_document(doc: ReferenceDocument, found: list[Detection], threshold: float) -> list[dict]:
     """Rows with outcome tp / fn / fp / fp_unverified for one document."""
     pairs: list[tuple[float, int, int]] = []
+    blocked: dict[int, str] = {}
     for ai, ann in enumerate(doc.annotations):
         for di, det in enumerate(found):
             if det.label != ann.label:
+                continue
+            ok, why = _relevant(ann, det)
+            if not ok:
+                blocked.setdefault(ai, why or "")
                 continue
             if ann.text:
                 score = similarity(ann.text, det.text)
@@ -197,8 +236,10 @@ def match_document(doc: ReferenceDocument, found: list[Detection], threshold: fl
             "page": (ann.page if ann else None) or (det.page if det else None),
             "similarity": round(score, 2) if score is not None else None,
             "high_severity": bool(
-                (ann and ann.severity == "high") or (det and det.high and not ann)
+                (ann and ann.severity == "high" and ann.intent != "recommendation")
+                or (det and det.high and not ann)
             ),
+            "intent": ann.intent if ann else None,
         }
 
     for score, ai, di in pairs:
@@ -209,7 +250,10 @@ def match_document(doc: ReferenceDocument, found: list[Detection], threshold: fl
         rows.append(row("tp", doc.annotations[ai], found[di], score))
     for ai, ann in enumerate(doc.annotations):
         if ai not in used_a:
-            rows.append(row("fn", ann=ann))
+            missed = row("fn", ann=ann)
+            if ai in blocked:
+                missed["note"] = f"same-label finding not credited: {blocked[ai]}"
+            rows.append(missed)
     fp = "fp" if doc.annotations_complete else "fp_unverified"
     for di, det in enumerate(found):
         if di not in used_d:
@@ -358,10 +402,24 @@ def compare(
     report.issue_metrics = {
         label: _counts([r for r in issue_rows if r["label"] == label]) for label in labels
     }
-    report.issue_overall = _counts(
-        [r for r in issue_rows if not r["label"].startswith("unmapped:")]
+    out_of_scope = {k for k, v in cfg.labels.items() if not v}
+    in_scope = [
+        r
+        for r in issue_rows
+        if not r["label"].startswith("unmapped:") and r["label"] not in out_of_scope
+    ]
+    report.outside_scanner_scope = dict(
+        sorted(
+            {
+                label: sum(1 for r in issue_rows if r["label"] == label)
+                for label in out_of_scope
+                if any(r["label"] == label for r in issue_rows)
+            }.items()
+        )
     )
-    report.high_severity = _counts([r for r in issue_rows if r["high_severity"]])
+    report.recommendations = sum(1 for r in issue_rows if r.get("intent") == "recommendation")
+    report.issue_overall = _counts(in_scope)
+    report.high_severity = _counts([r for r in in_scope if r["high_severity"]])
     report.criterion_errors = {
         c: error_stats(pairs, 1.0, scoring) for c, pairs in crit_pairs.items()
     }

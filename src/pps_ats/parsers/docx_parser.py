@@ -36,6 +36,7 @@ from pps_ats.schemas.content import (
     FontSource,
     ImageInfo,
     Line,
+    LinkInfo,
     ParagraphFormat,
     Region,
     Span,
@@ -405,6 +406,18 @@ def _length_pt(value: Any) -> float | None:
     return round(value.pt, 2) if value is not None else None
 
 
+def _docx_links(document) -> list[LinkInfo]:  # type: ignore[no-untyped-def]
+    """External hyperlink targets of the main document part (no positions)."""
+    out: list[LinkInfo] = []
+    try:
+        for rel in document.part.rels.values():
+            if rel.reltype.endswith("/hyperlink") and rel.is_external:
+                out.append(LinkInfo(uri=str(rel.target_ref)[:500]))
+    except Exception:  # optional evidence only
+        return out
+    return out
+
+
 def parse_docx(path: Path, settings: Settings) -> DocxParseOutput:
     try:
         document = Document(str(path))
@@ -527,6 +540,7 @@ def parse_docx(path: Path, settings: Settings) -> DocxParseOutput:
         blocks=blocks,
         tables=collector.tables,
         images=images,
+        links=_docx_links(document),
         stats=compute_text_stats(
             body_text,
             [s for b in body_blocks for line in b.lines for s in line.spans],

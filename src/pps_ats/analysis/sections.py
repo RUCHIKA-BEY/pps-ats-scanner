@@ -55,6 +55,8 @@ class HeadingMatch:
     remainder: str  # inline content after "Heading:"
     formatted: bool
     weak: bool
+    kind: str = "exact"  # exact | compound | head_noun
+    also: list[str] = field(default_factory=list)  # other sections of a combined heading
 
 
 @dataclass
@@ -106,6 +108,9 @@ def logical_lines(
     return lines
 
 
+_JOINER_RE = re.compile(r"\s*(?:&|/|\||\+|,|\band\b)\s*", re.IGNORECASE)
+
+
 class HeadingMatcher:
     def __init__(self, cfg: SectionSettings, body_size: float | None) -> None:
         self.cfg = cfg
@@ -116,6 +121,62 @@ class HeadingMatcher:
                 norm = normalize_for_match(variant)
                 self.variants.setdefault(norm, canonical)
                 self.variants.setdefault(norm.replace(" ", ""), canonical)
+        self.head_nouns: dict[str, str] = {
+            noun.casefold(): canonical
+            for canonical, nouns in cfg.head_nouns.items()
+            for noun in nouns
+        }
+
+    def _head_noun(self, text: str) -> str | None:
+        """'Major Project', 'Online Certifications', 'Projects Undertaken': a configured
+        section noun as the first or last word of a short phrase (at most 3 modifiers)."""
+        tokens = normalize_for_match(text).split()
+        if not 1 <= len(tokens) <= 4:
+            return None
+        if tokens[-1] in self.head_nouns:  # 'Major Project', 'Online Certifications'
+            return self.head_nouns[tokens[-1]]
+        if len(tokens) <= 2 and tokens[0] in self.head_nouns:  # 'Projects Undertaken'
+            return self.head_nouns[tokens[0]]
+        return None  # 'PROJECT MANAGER INTERN' is a job title, not a heading
+
+    def _compound(self, text: str) -> list[str] | None:
+        """'Projects & Achievements', 'COURSES/CERTIFICATIONS': every part must itself be
+        a section name (exact or head noun); returns the sections in order."""
+        parts = [p.strip(" .:-") for p in _JOINER_RE.split(text) if p.strip(" .:-")]
+        if len(parts) < 2 or any(len(p.split()) > 4 for p in parts):
+            return None
+        names = []
+        for part in parts:
+            name = self._lookup(part) or self._head_noun(part)
+            if name is None:
+                return None
+            if name not in names:
+                names.append(name)
+        return names
+
+    def _strongly_formatted(self, line: LogicalLine, heading_text: str) -> bool:
+        """Upper case, larger font or a heading style - bold alone is not enough (bold
+        is also used for project and job titles)."""
+        letters = [c for c in heading_text if c.isalpha()]
+        if letters and all(c.isupper() for c in letters) and len(letters) > 2:
+            return True
+        if line.style and line.style.lower().startswith(_HEADING_STYLE_PREFIXES):
+            return True
+        return bool(line.size and self.body_size and line.size >= self.body_size * 1.12)
+
+    def _extended(self, line: LogicalLine, text: str, inline: bool) -> HeadingMatch | None:
+        heading_text = text.strip()
+        names = self._compound(heading_text)
+        if names and (inline or self._formatted(line, heading_text)):
+            return HeadingMatch(names[0], heading_text, "", True, False, "compound", names[1:])
+        name = self._head_noun(heading_text)
+        if (
+            name
+            and self._strongly_formatted(line, heading_text)
+            and (len(normalize_for_match(heading_text).split()) > 1 or inline)
+        ):
+            return HeadingMatch(name, heading_text, "", True, False, "head_noun")
+        return None
 
     def _lookup(self, text: str) -> str | None:
         norm = normalize_for_match(text)
@@ -145,10 +206,14 @@ class HeadingMatcher:
             head, _, rest = line.text.partition(":")
             canonical = self._lookup(head)
             if canonical is None:
-                return None
+                extended = self._extended(line, head.strip(" •·-–—|"), inline=True)
+                if extended is None:
+                    return None
+                extended.remainder = rest.strip()
+                return extended
             heading_text, remainder = head.strip(), rest.strip()
         if canonical is None:
-            return None
+            return self._extended(line, text, inline=False)
         formatted = self._formatted(line, heading_text)
         single_word = len(normalize_for_match(heading_text).split()) == 1
         # A plain single word on its own line ("Leadership") is weak evidence; inline
@@ -204,6 +269,14 @@ def segment_lines(content: ExtractedContent, cfg: SectionSettings) -> list[LineA
         if (
             heading is not None
             and current is not None
+            and heading.kind != "exact"
+            and heading.canonical == current
+        ):
+            # 'Final Year Project' inside Projects is an entry title, not a new heading.
+            heading = None
+        if (
+            heading is not None
+            and current is not None
             and (heading.remainder or heading.weak)
             and (
                 heading.canonical == current
@@ -225,6 +298,7 @@ def extract_sections(content: ExtractedContent, cfg: SectionSettings) -> Section
     found: dict[str, Section] = {}
     weak_heading: dict[str, bool] = {}
     buffers: dict[str, list[str]] = {}
+    combined: list[tuple[str, str, LogicalLine, HeadingMatch]] = []  # (also, primary, ...)
 
     for assignment in segment_lines(content, cfg):
         line, heading, current = assignment.line, assignment.heading, assignment.section
@@ -245,6 +319,9 @@ def extract_sections(content: ExtractedContent, cfg: SectionSettings) -> Section
             else:
                 weak_heading[current] = weak_heading[current] and heading.weak
             section.occurrences += 1
+            combined += [(name, current, line, heading) for name in heading.also]
+            if heading.kind != "exact":
+                section.evidence.append(f"{heading.kind.replace('_', ' ')} heading")
             if not heading.formatted:
                 section.evidence.append(
                     f"heading '{heading.heading_text}' has no heading formatting"
@@ -269,6 +346,25 @@ def extract_sections(content: ExtractedContent, cfg: SectionSettings) -> Section
         section.evidence.insert(0, reason)
         if section.occurrences > 1:
             section.evidence.append(f"heading appears {section.occurrences} times")
+
+    # A combined heading ('Projects & Achievements') also evidences its other sections.
+    for name, primary, line, heading in combined:
+        if name in found:
+            continue
+        source = found[primary]
+        found[name] = Section(
+            name=name,
+            status=source.status,
+            heading_text=heading.heading_text,
+            heading_block_id=line.block_id,
+            page=line.page,
+            bbox=line.bbox,
+            content_text=source.content_text,
+            content_char_count=source.content_char_count,
+            content_block_ids=list(source.content_block_ids),
+            occurrences=1,
+            evidence=[f"shares the combined heading with '{primary}'"],
+        )
 
     # Contact information is usually unlabelled, so detect it from the text itself.
     all_text = f"{content.full_text}\n{content.header_footer_text}"

@@ -50,6 +50,10 @@ class ReferenceAnnotation:
     source: str = "faculty"
     annotator_id: str | None = None
     comment: str | None = None
+    intent: str | None = None  # correction_required | recommendation | unclear
+    reviewer_id: str | None = None
+    section: str | None = None  # resume section the faculty comment refers to
+    topics: frozenset[str] = frozenset()  # derived topic families (see evaluation.topics)
 
 
 @dataclass
@@ -80,6 +84,7 @@ class ReferenceDataset:
     warnings: list[str] = field(default_factory=list)
     excluded_ai_annotations: int = 0
     unknown_labels: dict[str, int] = field(default_factory=dict)
+    all_splits: dict[str, str] = field(default_factory=dict)  # incl. excluded documents
 
     def select(self, split: str) -> list[ReferenceDocument]:
         return [d for d in self.documents if d.split == split]
@@ -125,6 +130,8 @@ def load_dataset(
     base = Path(documents_root) if documents_root else root
     warnings: list[str] = []
     documents: dict[str, ReferenceDocument] = {}
+    excluded_docs: set[str] = set()
+    all_splits: dict[str, str] = {}
     for line, row in enumerate(_rows(docs_csv), start=2):
         doc_id = row.get("document_id", "")
         if not doc_id:
@@ -134,6 +141,7 @@ def load_dataset(
         split = row.get("split", "").lower()
         if split not in SPLITS:
             raise DatasetError(f"{doc_id}: split must be one of {SPLITS} (run eval-split)")
+        all_splits[doc_id] = split
         expected = row.get("expected_validation", "").lower() or None
         if expected is not None and expected not in VALIDATION_VALUES:
             raise DatasetError(f"{doc_id}: expected_validation must be one of {VALIDATION_VALUES}")
@@ -160,6 +168,14 @@ def load_dataset(
         rel = row.get("file", "")
         if not rel:
             raise DatasetError(f"{doc_id}: file is empty")
+        input_status = row.get("scanner_input_status", "")
+        if input_status and input_status != "clean":
+            warnings.append(
+                f"{doc_id}: scanner input status {input_status!r} (faculty text not cleanly "
+                "separated); excluded until reviewed"
+            )
+            excluded_docs.add(doc_id)
+            continue
         documents[doc_id] = ReferenceDocument(
             document_id=doc_id,
             file=rel,
@@ -179,6 +195,8 @@ def load_dataset(
     if ann_csv.is_file():
         for line, row in enumerate(_rows(ann_csv), start=2):
             doc_id, label = row.get("document_id", ""), row.get("label", "").lower()
+            if doc_id in excluded_docs:
+                continue  # feedback kept in annotations.csv; the document is not evaluated
             if doc_id not in documents:
                 raise DatasetError(f"annotations.csv line {line}: unknown document_id {doc_id!r}")
             if not label:
@@ -201,6 +219,12 @@ def load_dataset(
                     source=source,
                     annotator_id=row.get("annotator_id") or None,
                     comment=row.get("comment") or None,
+                    intent=(row.get("intent") or "").lower() or None,
+                    reviewer_id=row.get("reviewer_id") or None,
+                    section=row.get("section") or None,
+                    topics=frozenset(
+                        t.strip() for t in (row.get("topics") or "").split(",") if t.strip()
+                    ),
                 )
             )
     dataset = ReferenceDataset(
@@ -210,6 +234,7 @@ def load_dataset(
         warnings=warnings,
         excluded_ai_annotations=excluded,
         unknown_labels=unknown,
+        all_splits=all_splits,
     )
     check_split_lock(dataset)
     return dataset
@@ -228,9 +253,8 @@ def check_split_lock(dataset: ReferenceDataset) -> None:
         )
         return
     frozen: dict[str, str] = json.loads(lock_path.read_text(encoding="utf-8"))["splits"]
-    moved = [
-        d.document_id for d in dataset.documents if frozen.get(d.document_id, d.split) != d.split
-    ]
+    current = dataset.all_splits or {d.document_id: d.split for d in dataset.documents}
+    moved = [doc for doc, split in current.items() if frozen.get(doc, split) != split]
     if moved:
         raise DatasetError(
             f"{len(moved)} document(s) changed split since it was frozen: " + ", ".join(moved[:10])
@@ -242,11 +266,27 @@ def _bucket(document_id: str, seed: int) -> float:
     return int(digest[:8], 16) / 0xFFFFFFFF
 
 
-def freeze_split(root: Path, eval_fraction: float = 0.3, seed: int = 13) -> dict[str, int]:
-    """Assign a split to rows without one (deterministic by document_id hash), keep every
-    existing assignment, and write ``documents.csv`` and ``split_lock.json``.
+def freeze_split(
+    root: Path,
+    eval_fraction: float = 0.3,
+    seed: int = 13,
+    eval_count: int | None = None,
+    stratify_by: str | None = None,
+    group_by: str | None = None,
+) -> dict[str, int]:
+    """Assign a split to rows without one and freeze it in ``split_lock.json``.
 
-    The original ``documents.csv`` is kept as ``documents.csv.bak`` the first time."""
+    * Deterministic: the order comes from a seeded hash of the group key.
+    * ``eval_count``: exactly this many unassigned documents go to evaluation (groups are
+      kept whole, so it can be exceeded by the size of the last group); otherwise each
+      group goes to evaluation when its hash bucket is below ``eval_fraction``.
+    * ``stratify_by``: a documents.csv column (e.g. ``scanner_input_status``); evaluation
+      documents are allocated to each stratum in proportion to its size.
+    * ``group_by``: a documents.csv column; documents sharing a value (same student,
+      duplicate files) always land in the same split.
+    * Existing assignments (column or lock) are never changed. The original
+      ``documents.csv`` is kept as ``documents.csv.bak`` the first time.
+    """
     root = Path(root)
     path = root / "documents.csv"
     with path.open(newline="", encoding="utf-8-sig") as handle:
@@ -255,23 +295,89 @@ def freeze_split(root: Path, eval_fraction: float = 0.3, seed: int = 13) -> dict
         rows = list(reader)
     if "split" not in fields:
         fields.insert(2 if len(fields) >= 2 else len(fields), "split")
+    for column in (stratify_by, group_by):
+        if column and column not in fields:
+            raise DatasetError(f"documents.csv has no column {column!r}")
     lock_path = root / SPLIT_LOCK
-    frozen: dict[str, str] = (
-        json.loads(lock_path.read_text(encoding="utf-8"))["splits"] if lock_path.is_file() else {}
-    )
-    counts = {s: 0 for s in SPLITS}
+    previous = json.loads(lock_path.read_text(encoding="utf-8")) if lock_path.is_file() else {}
+    frozen: dict[str, str] = previous.get("splits", {})
+
+    def group_of(row: dict) -> str:
+        doc_id = (row.get("document_id") or "").strip()
+        return ((row.get(group_by) or "").strip() if group_by else "") or doc_id
+
+    assigned: dict[str, str] = {}
+    pending: list[dict] = []
     for row in rows:
         doc_id = (row.get("document_id") or "").strip()
         split = (row.get("split") or "").strip().lower() or frozen.get(doc_id, "")
-        if split not in SPLITS:
-            split = "evaluation" if _bucket(doc_id, seed) < eval_fraction else "calibration"
-        if doc_id in frozen and frozen[doc_id] != split:
-            raise DatasetError(
-                f"{doc_id}: split {split!r} differs from the frozen {frozen[doc_id]!r}"
-            )
-        row["split"] = split
-        frozen[doc_id] = split
-        counts[split] += 1
+        if split in SPLITS:
+            if doc_id in frozen and frozen[doc_id] != split:
+                raise DatasetError(
+                    f"{doc_id}: split {split!r} differs from the frozen {frozen[doc_id]!r}"
+                )
+            assigned[doc_id] = split
+        else:
+            pending.append(row)
+    # groups already (partly) assigned keep that split
+    group_split: dict[str, str] = {}
+    for row in rows:
+        doc_id = (row.get("document_id") or "").strip()
+        if doc_id in assigned:
+            group_split.setdefault(group_of(row), assigned[doc_id])
+    groups: dict[str, list[dict]] = {}
+    for row in pending:
+        groups.setdefault(group_of(row), []).append(row)
+    free = {g: members for g, members in groups.items() if g not in group_split}
+    for g in groups:
+        if g in group_split:
+            for row in groups[g]:
+                assigned[(row.get("document_id") or "").strip()] = group_split[g]
+    if eval_count is None:
+        for g in free:
+            group_split[g] = "evaluation" if _bucket(g, seed) < eval_fraction else "calibration"
+    else:
+        strata: dict[str, list[str]] = {}
+        for g, members in free.items():
+            key = (members[0].get(stratify_by) or "") if stratify_by else ""
+            strata.setdefault(key, []).append(g)
+        total = sum(len(free[g]) for g in free)
+        want = min(eval_count, total)
+        shares = {
+            k: want * sum(len(free[g]) for g in gs) / total if total else 0
+            for k, gs in strata.items()
+        }
+        targets = {k: int(v) for k, v in shares.items()}
+        for k in sorted(shares, key=lambda k: (-(shares[k] - targets[k]), k))[
+            : want - sum(targets.values())
+        ]:
+            targets[k] += 1
+        for k, gs in strata.items():
+            taken = 0
+            for g in sorted(gs, key=lambda g: (_bucket(g, seed), g)):
+                if taken < targets[k]:
+                    group_split[g] = "evaluation"
+                    taken += len(free[g])
+                else:
+                    group_split[g] = "calibration"
+    for g, members in free.items():
+        for row in members:
+            assigned[(row.get("document_id") or "").strip()] = group_split[g]
+    # leakage check: a group never spans both splits
+    by_group: dict[str, set[str]] = {}
+    for row in rows:
+        by_group.setdefault(group_of(row), set()).add(
+            assigned[(row.get("document_id") or "").strip()]
+        )
+    leaking = [g for g, splits in by_group.items() if len(splits) > 1]
+    if leaking:
+        raise DatasetError(f"{len(leaking)} group(s) would span both splits: {leaking[:5]}")
+    counts = {s: 0 for s in SPLITS}
+    for row in rows:
+        doc_id = (row.get("document_id") or "").strip()
+        row["split"] = assigned[doc_id]
+        frozen[doc_id] = assigned[doc_id]
+        counts[assigned[doc_id]] += 1
     backup = root / "documents.csv.bak"
     if not backup.exists():
         backup.write_bytes(path.read_bytes())
@@ -281,8 +387,18 @@ def freeze_split(root: Path, eval_fraction: float = 0.3, seed: int = 13) -> dict
         writer.writeheader()
         writer.writerows(rows)
     tmp.replace(path)
-    lock_path.write_text(
-        json.dumps({"seed": seed, "eval_fraction": eval_fraction, "splits": frozen}, indent=2),
-        encoding="utf-8",
-    )
+    lock = {
+        "seed": previous.get("seed", seed),
+        "eval_fraction": previous.get("eval_fraction", eval_fraction),
+        "eval_count": previous.get("eval_count", eval_count),
+        "stratify_by": previous.get("stratify_by", stratify_by),
+        "group_by": previous.get("group_by", group_by),
+        "created_at": previous.get("created_at")
+        or __import__("datetime")
+        .datetime.now(__import__("datetime").UTC)
+        .isoformat(timespec="seconds"),
+        "counts": counts,
+        "splits": frozen,
+    }
+    lock_path.write_text(json.dumps(lock, indent=2), encoding="utf-8")
     return counts

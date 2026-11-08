@@ -573,7 +573,8 @@ def check_filler(ctx: AnalysisContext) -> list[Finding]:
 
 def check_education(ctx: AnalysisContext) -> list[Finding]:
     cfg = ctx.settings.analysis.content
-    lines = ctx.section_lines("education")
+    # Bullet-only lines (a glyph stored as its own PDF line) are not education entries.
+    lines = [t for t in ctx.section_lines("education") if any(c.isalnum() for c in t.body_text)]
     if not lines:
         return []
     degree_re = (
@@ -623,7 +624,7 @@ def check_education(ctx: AnalysisContext) -> list[Finding]:
                 method=DetectionMethod.PATTERN,
                 confidence=0.65,
                 detected_text=entry[0].content_text,
-                location=locate(entry[0]),
+                location=locate(_lead(entry)),
                 section="education",
                 evidence={"missing": missing},
             )

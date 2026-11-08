@@ -61,7 +61,13 @@ def _is_icon_font(ctx: AnalysisContext, family: str) -> bool:
 
 
 def _visible(span: Span) -> int:
-    return sum(1 for c in span.text if not c.isspace())
+    """Letters and digits only: bullet glyphs, separators and icons are not body text
+    (many resumes draw bullets in a different font or size, or as separate lines)."""
+    return sum(1 for c in span.text if c.isalnum())
+
+
+def _has_text(text: str) -> bool:
+    return any(c.isalnum() for c in text)
 
 
 def _body_lines(ctx: AnalysisContext) -> list[TextLine]:
@@ -118,6 +124,8 @@ def check_fonts(ctx: AnalysisContext) -> list[Finding]:
                 continue
             if body and span.size and abs(span.size - body) > 0.75:
                 continue
+            if not _visible(span):
+                continue  # a bullet glyph in another font is not mixed body text
             role_chars[fam] += _visible(span)
             if not role_blocks[fam] or role_blocks[fam][-1].block_id != tl.block_id:
                 role_blocks[fam].append(tl)
@@ -130,7 +138,12 @@ def check_fonts(ctx: AnalysisContext) -> list[Finding]:
                 continue
             for tl in role_blocks[fam]:
                 span_idx = next(
-                    (i for i, s in enumerate(tl.line.spans) if font_family(s.font) == fam), 0
+                    (
+                        i
+                        for i, s in enumerate(tl.line.spans)
+                        if font_family(s.font) == fam and _visible(s)
+                    ),
+                    0,
                 )
                 start = sum(len(s.text) for s in tl.line.spans[:span_idx])
                 start = max(0, start - (len(tl.raw_text) - len(tl.raw_text.lstrip())))
@@ -231,7 +244,7 @@ def check_sizes(ctx: AnalysisContext) -> list[Finding]:
             if tl.section and not tl.is_heading and tl.bold_ratio < 0.5:
                 by_block[tl.block_id].append(tl)
         for lines in by_block.values():
-            sizes = [s.size for t in lines for s in t.line.spans if s.size and s.text.strip()]
+            sizes = [s.size for t in lines for s in t.line.spans if s.size and _visible(s)]
             letters = sum(len(t.text) for t in lines)
             if not sizes or letters < 20:
                 continue
@@ -296,7 +309,7 @@ def check_spacing(ctx: AnalysisContext) -> list[Finding]:
     # Line spacing inside paragraphs (PyMuPDF blocks with 2+ lines).
     ratios: dict[str, float] = {}
     block_lines: dict[str, list[TextLine]] = defaultdict(list)
-    for tl in _body_lines(ctx):
+    for tl in (t for t in _body_lines(ctx) if _has_text(t.text)):
         if not tl.is_heading:
             block_lines[tl.block_id].append(tl)
     for block_id, lines in block_lines.items():
@@ -524,8 +537,8 @@ def check_alignment(ctx: AnalysisContext) -> list[Finding]:
     edges: dict[int | None, list[float]] = defaultdict(list)
     lines_at: dict[tuple[int | None, float], TextLine] = {}
     for tl in _body_lines(ctx):
-        if tl.is_heading or tl.bbox is None or tl.page not in pages:
-            continue
+        if tl.is_heading or tl.bbox is None or tl.page not in pages or not _has_text(tl.text):
+            continue  # bullet-only lines have their own left edge but are not text
         width = pages[tl.page].width_pt
         centre = (tl.bbox[0] + tl.bbox[2]) / 2
         if abs(centre - width / 2) < 10 and tl.bbox[0] > 0.2 * width:

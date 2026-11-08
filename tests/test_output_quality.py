@@ -138,3 +138,55 @@ def test_alignment_finding_has_a_location(tmp_path):
     analysis = analyze_file(write_pdf(tmp_path / "a.pdf", items), load_settings())
     found = [f for f in analysis.findings if f.rule_id == "FMT_INCONSISTENT_ALIGNMENT"]
     assert found and found[0].page_number == 1 and found[0].bounding_box is not None
+
+
+def glyph_bullet_resume(path: Path) -> Path:
+    """Body in Helvetica; bullet glyphs drawn as separate lines in another font and size
+    (as in several real resumes)."""
+    doc = pymupdf.open()
+    page = doc.new_page()
+    _line(page, 60, "RIYA SYNTHETIC", 18, True)
+    _line(page, 84, CONTACT)
+    y = 112
+    for heading, rows in (
+        ("EDUCATION", ["B.Tech in Computer Engineering, Example Institute of Technology,",
+                       "2022 - 2026, CGPA 8.4 / 10"]),
+        ("EXPERIENCE", ["Built REST endpoints for the billing service in Python and Flask",
+                        "Automated weekly reports with pandas, saving the team two hours",
+                        "Wrote integration tests for the payments module with pytest"]),
+    ):  # fmt: skip
+        _line(page, y, heading, 12.5, True)
+        y += 18
+        for row in rows:
+            page.insert_text((72, y), "•", fontsize=7, fontname="tiro")  # glyph-only line
+            _line(page, y, row, x=86)
+            y += 14
+        y += 8
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(path)
+    doc.close()
+    return path
+
+
+def test_bullet_glyph_lines_are_not_formatting_problems(tmp_path):
+    path = glyph_bullet_resume(tmp_path / "g.pdf")
+    rules = [f.rule_id for f in analyze_file(path, load_settings()).findings]
+    for rule in ("FMT_MIXED_BODY_FONTS", "FMT_LINE_SPACING", "FMT_INCONSISTENT_ALIGNMENT",
+                 "FMT_INCONSISTENT_BODY_SIZE"):  # fmt: skip
+        assert rule not in rules, rule
+
+
+def test_education_location_skips_bullet_line(tmp_path):
+    doc = pymupdf.open()
+    page = doc.new_page()
+    _line(page, 60, "RIYA SYNTHETIC", 18, True)
+    _line(page, 84, CONTACT)
+    _line(page, 112, "EDUCATION", 12.5, True)
+    page.insert_text((72, 130), "•", fontsize=7, fontname="tiro")
+    _line(page, 130, "B.Tech in Computer Engineering, Example Institute of Technology", x=86)
+    path = tmp_path / "e.pdf"
+    doc.save(path)
+    doc.close()
+    f = next(x for x in analyze_file(path, load_settings()).findings
+             if x.rule_id == "CQ_EDUCATION_INCOMPLETE")  # fmt: skip
+    assert pymupdf.Rect(f.bounding_box).width > 40

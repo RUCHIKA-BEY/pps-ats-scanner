@@ -522,6 +522,7 @@ def check_alignment(ctx: AnalysisContext) -> list[Finding]:
 
     pages = {p.number: p for p in ctx.content.pages}
     edges: dict[int | None, list[float]] = defaultdict(list)
+    lines_at: dict[tuple[int | None, float], TextLine] = {}
     for tl in _body_lines(ctx):
         if tl.is_heading or tl.bbox is None or tl.page not in pages:
             continue
@@ -530,6 +531,7 @@ def check_alignment(ctx: AnalysisContext) -> list[Finding]:
         if abs(centre - width / 2) < 10 and tl.bbox[0] > 0.2 * width:
             continue  # centred line
         edges[tl.block.column].append(tl.bbox[0])
+        lines_at.setdefault((tl.block.column, tl.bbox[0]), tl)
     findings: list[Finding] = []
     for column, xs in edges.items():
         clusters: list[list[float]] = []
@@ -540,6 +542,8 @@ def check_alignment(ctx: AnalysisContext) -> list[Finding]:
                 clusters.append([x])
         major = [c for c in clusters if len(c) >= 2]
         if len(major) > cfg.max_left_edge_clusters:
+            rare = min(major, key=len)  # an example from the least used indentation
+            example = lines_at.get((column, rare[0]))
             findings.append(
                 make_finding(
                     rule_id="FMT_INCONSISTENT_ALIGNMENT",
@@ -555,8 +559,11 @@ def check_alignment(ctx: AnalysisContext) -> list[Finding]:
                     correction="Align body text and bullets to a small set of consistent indents.",
                     method=DetectionMethod.GEOMETRY,
                     confidence=0.6,
+                    detected_text=example.text if example else None,
+                    location=locate(example) if example else None,
                     evidence={
-                        "left_edges_pt": [str(round(statistics.median(c), 1)) for c in major][:10]
+                        "left_edges_pt": [str(round(statistics.median(c), 1)) for c in major][:10],
+                        "example": "a line from the least used indentation",
                     },
                 )
             )

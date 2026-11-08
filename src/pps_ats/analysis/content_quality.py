@@ -214,6 +214,15 @@ def _items(lines: list[TextLine]) -> list[list[TextLine]]:
     return items
 
 
+def _lead(item: list[TextLine]) -> TextLine:
+    """The first line of an item that carries text. Some PDFs store the bullet glyph as its
+    own line; locating or reading that line would point at the bullet, not the text."""
+    for tl in item:
+        if any(ch.isalnum() for ch in tl.body_text):
+            return tl
+    return item[0]
+
+
 # --------------------------------------------------------------------------- checks
 
 
@@ -401,11 +410,12 @@ def check_projects(ctx: AnalysisContext) -> list[Finding]:
                         "does not explain the project."
                     ),
                     correction=(
-                        "Explain the problem solved, how it works and any measurable result."
+                        "Explain the problem solved, how it works and your part in it. Mention "
+                        "a result only if it is real and you can support it."
                     ),
                     method=DetectionMethod.STRUCTURE,
                     confidence=0.6,
-                    detected_text=description,
+                    detected_text=title,
                     location=location,
                     section="projects",
                     evidence={"word_count": word_count},
@@ -450,8 +460,8 @@ def check_repeated_lines(ctx: AnalysisContext) -> list[Finding]:
                     method=DetectionMethod.PATTERN,
                     confidence=0.95,
                     detected_text=text,
-                    location=locate(item[0]),
-                    section=item[0].section,
+                    location=locate(_lead(item)),
+                    section=_lead(item).section,
                     evidence={"first_occurrence_block": original.block_id},
                 )
             )
@@ -497,7 +507,7 @@ def check_weak_verbs(ctx: AnalysisContext) -> list[Finding]:
     findings: list[Finding] = []
     for section in ("experience", "projects", "achievements", "activities"):
         for item in _items(ctx.section_lines(section)):
-            tl = item[0]
+            tl = _lead(item)
             text = tl.body_text
             lowered = text.lower()
             opener = next((o for o in openers if re.match(rf"{re.escape(o)}\b", lowered)), None)
@@ -626,7 +636,7 @@ def check_certifications(ctx: AnalysisContext) -> list[Finding]:
     only_ph = ctx.cache.get("placeholder_only_lines", set())
     findings: list[Finding] = []
     for item in _items(ctx.section_lines("certifications")):
-        if _key(item[0]) in only_ph:
+        if _key(_lead(item)) in only_ph:
             continue
         text = " ".join(t.content_text for t in item)
         if _letters(text) < 6:
@@ -654,7 +664,7 @@ def check_certifications(ctx: AnalysisContext) -> list[Finding]:
                 method=DetectionMethod.PATTERN,
                 confidence=0.6,
                 detected_text=text,
-                location=locate(item[0]),
+                location=locate(_lead(item)),
                 section="certifications",
                 evidence={"missing": missing},
             )

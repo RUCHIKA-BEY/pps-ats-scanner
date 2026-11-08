@@ -279,6 +279,28 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="replay the earlier label+page matching (for pilots made before strict matching)",
     )
+    sp = sub.add_parser(
+        "spot-check-package",
+        help="private faculty spot-check package for queued batch documents (provisional marks)",
+    )
+    sp.add_argument("batch", type=Path, help="batch output folder (results/, annotated/)")
+    sp.add_argument("--input", type=Path, required=True, help="folder of the clean originals")
+    sp.add_argument("--queue", type=Path, required=True, help="CSV with document, reasons")
+    sp.add_argument("-o", "--output", type=Path, required=True, help="new private folder")
+    sp.add_argument(
+        "--reference",
+        type=Path,
+        help="reference dataset: refuse any document outside the frozen calibration split",
+    )
+    sp.add_argument("--allow-synced-output", action="store_true")
+    sc = sub.add_parser(
+        "spot-check-compare",
+        help="compare a returned faculty spot-check workbook with scanner marks",
+    )
+    sc.add_argument("package", type=Path, help="spot-check package folder")
+    sc.add_argument("-o", "--output", type=Path, required=True, help="new private folder")
+    sc.add_argument("--workbook", type=Path, help="returned workbook (default: in the package)")
+    sc.add_argument("--allow-synced-output", action="store_true")
     fr = sub.add_parser("finalize-review", help="reference annotations from accepted rows")
     fr.add_argument("reference", type=Path)
     fr.add_argument("--split", required=True, choices=["calibration", "evaluation"])
@@ -634,6 +656,50 @@ def _run_reference(args: argparse.Namespace, settings) -> int:  # type: ignore[n
     return 0
 
 
+def _run_spot_check(args: argparse.Namespace, settings) -> int:  # type: ignore[no-untyped-def]
+    from pps_ats.evaluation import spot_check as sc
+
+    problem = _private_output(args.output, args.allow_synced_output, settings)
+    if problem:
+        print(f"error: {problem}", file=sys.stderr)
+        return 2
+    try:
+        if args.command == "spot-check-package":
+            if args.reference is None:
+                print(
+                    "note: no --reference given, so the calibration split is not checked",
+                    file=sys.stderr,
+                )
+            s = sc.build_package(
+                args.batch, args.input, args.queue, args.output, settings, args.reference
+            )
+            print(
+                f"spot-check package: {s['documents']} documents, {s['finding_rows']} finding "
+                f"rows ({s['deducting_rows']} deducting), kinds {s['kinds']}; marks PROVISIONAL "
+                f"-> {s['workbook']}",
+                file=sys.stderr,
+            )
+            return 0
+        r = sc.compare_review(args.package, args.output, args.workbook)
+        if not r["intact"]:
+            print(
+                f"error: the returned workbook failed {len(r['integrity_problems'])} integrity "
+                f"check(s); see {args.output / 'comparison.json'}",
+                file=sys.stderr,
+            )
+            return 1
+        print(
+            f"spot-check comparison: {r['decided_rows']}/{r['finding_rows']} rows decided; "
+            f"faculty totals for {r['documents_with_faculty_total']}/{r['documents']} documents; "
+            f"total difference {r['score_difference_total']} -> {args.output / 'comparison.json'}",
+            file=sys.stderr,
+        )
+        return 0
+    except (sc.SpotCheckError, OSError, KeyError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+
 def _run_eval_split(args: argparse.Namespace) -> int:
     from pps_ats.evaluation.dataset import DatasetError, freeze_split
 
@@ -761,6 +827,8 @@ def main(argv: list[str] | None = None) -> int:
             return _run_import(args, settings)
         if args.command == "finalize-annotations":
             return _run_finalize(args, settings)
+        if args.command in ("spot-check-package", "spot-check-compare"):
+            return _run_spot_check(args, settings)
         if args.command in (
             "reference-prepare",
             "review-sheet",
